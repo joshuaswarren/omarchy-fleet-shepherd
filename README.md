@@ -8,7 +8,7 @@ Fleet Shepherd answers three questions from the bar: are all connectors healthy,
 
 _The preview uses synthetic connector, agent, project, usage and error data._
 
-> Status: v0.1 local beta. Read-only fleet snapshots are implemented and live-tested; remote mutation is intentionally not implemented.
+> Status: v0.1.1 local beta. Read-only fleet snapshots are implemented and live-tested; remote mutation is intentionally not implemented.
 
 ## Features
 
@@ -17,6 +17,7 @@ _The preview uses synthetic connector, agent, project, usage and error data._
 - Workspace, project, cwd, and current activity
 - OMP requests, cost, tokens, cache/error summaries and top models
 - Partial-failure and stale/offline states without discarding the last valid snapshot
+- Shared locked runtime cache keeps bar and panel on the same exact snapshot
 - Live cross-fleet filter and keyboard navigation
 - Strict byte/item/string/concurrency/time bounds
 - No network listener, database, raw-session scraping, credentials, or elevated service

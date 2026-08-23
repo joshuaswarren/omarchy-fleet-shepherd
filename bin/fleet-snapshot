@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import errno
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -24,6 +25,12 @@ DEFAULT_CONFIG = os.path.expanduser("~/.config/fleet-shepherd/connectors.json")
 CONFIG_MAX_BYTES = 64 * 1024
 OUTPUT_MAX_BYTES = 2 * 1024 * 1024
 FINAL_MAX_BYTES = 4 * 1024 * 1024
+CACHE_DIRNAME = "fleet-shepherd"
+CACHE_FILENAME = "snapshot.json"
+CACHE_LOCKNAME = "snapshot.lock"
+CACHE_TMPNAME = ".snapshot.json.tmp"
+CACHE_TTL_MIN = 1
+CACHE_TTL_MAX = 300
 HERDR_TIMEOUT_SEC = 8.0
 OMP_TIMEOUT_SEC = 45.0
 GLOBAL_TIMEOUT_SEC = 60.0
@@ -655,17 +662,232 @@ def collect_snapshot(
     }
 
 
+def runtime_dir() -> str | None:
+    raw = os.environ.get("XDG_RUNTIME_DIR", "")
+    if not raw or "\x00" in raw or "\n" in raw or "\r" in raw:
+        return None
+    if not os.path.isabs(raw):
+        return None
+    return raw
+
+
+def _open_cache_dir() -> int | None:
+    base = runtime_dir()
+    if base is None:
+        return None
+    dir_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    try:
+        base_fd = os.open(base, dir_flags)
+    except OSError:
+        return None
+    try:
+        try:
+            os.mkdir(CACHE_DIRNAME, 0o700, dir_fd=base_fd)
+        except FileExistsError:
+            pass
+        except OSError:
+            return None
+        try:
+            dir_fd = os.open(CACHE_DIRNAME, dir_flags, dir_fd=base_fd)
+        except OSError:
+            return None
+        info = os.fstat(dir_fd)
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
+            os.close(dir_fd)
+            return None
+        try:
+            os.fchmod(dir_fd, 0o700)
+        except OSError:
+            os.close(dir_fd)
+            return None
+        return dir_fd
+    finally:
+        os.close(base_fd)
+
+
+def _open_lock(dir_fd: int) -> int | None:
+    flags = os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC
+    try:
+        fd = os.open(CACHE_LOCKNAME, flags, 0o600, dir_fd=dir_fd)
+    except OSError:
+        return None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid():
+            os.close(fd)
+            return None
+        os.fchmod(fd, 0o600)
+    except OSError:
+        os.close(fd)
+        return None
+    return fd
+
+
+def _valid_cached_snapshot(obj: Any, cache_key: str | None = None) -> bool:
+    if not isinstance(obj, dict):
+        return False
+    if obj.get("schemaVersion") != SCHEMA_VERSION:
+        return False
+    if not isinstance(obj.get("connectors"), list):
+        return False
+    if cache_key is not None and obj.get("_cacheKey") != cache_key:
+        return False
+    return True
+
+
+def _read_cache(dir_fd: int, cache_key: str) -> tuple[dict[str, Any] | None, float | None]:
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+    try:
+        fd = os.open(CACHE_FILENAME, flags, dir_fd=dir_fd)
+    except OSError:
+        return None, None
+    try:
+        info = os.fstat(fd)
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            return None, None
+        if info.st_uid != os.geteuid():
+            return None, None
+        if info.st_size > FINAL_MAX_BYTES:
+            return None, None
+        buf = bytearray()
+        while len(buf) <= FINAL_MAX_BYTES:
+            try:
+                chunk = os.read(fd, FINAL_MAX_BYTES + 1 - len(buf))
+            except BlockingIOError:
+                break
+            if not chunk:
+                break
+            buf.extend(chunk)
+            if len(buf) > FINAL_MAX_BYTES:
+                return None, None
+        try:
+            obj = json.loads(bytes(buf).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            return None, None
+        if not _valid_cached_snapshot(obj, cache_key):
+            return None, None
+        obj.pop("_cacheKey", None)
+        return obj, info.st_mtime
+    finally:
+        os.close(fd)
+
+
+def _cache_fresh(mtime: float, ttl: int) -> bool:
+    age = time.time() - mtime
+    return 0 <= age < ttl
+
+
+def _open_tmp(dir_fd: int) -> int:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+    try:
+        return os.open(CACHE_TMPNAME, flags, 0o600, dir_fd=dir_fd)
+    except FileExistsError:
+        os.unlink(CACHE_TMPNAME, dir_fd=dir_fd)
+        return os.open(CACHE_TMPNAME, flags, 0o600, dir_fd=dir_fd)
+
+
+def _write_cache(dir_fd: int, snapshot: dict[str, Any], cache_key: str) -> None:
+    if not _valid_cached_snapshot(snapshot):
+        return
+    cached = dict(snapshot)
+    cached["_cacheKey"] = cache_key
+    encoded = json.dumps(cached, separators=(",", ":"), ensure_ascii=False, sort_keys=True)
+    data = encoded.encode("utf-8")
+    if len(data) > FINAL_MAX_BYTES:
+        return
+    fd = -1
+    try:
+        fd = _open_tmp(dir_fd)
+        os.fchmod(fd, 0o600)
+        written = 0
+        while written < len(data):
+            written += os.write(fd, data[written:])
+        os.fsync(fd)
+        os.close(fd)
+        fd = -1
+        os.replace(CACHE_TMPNAME, CACHE_FILENAME, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        os.fsync(dir_fd)
+    except OSError:
+        if fd >= 0:
+            os.close(fd)
+        try:
+            os.unlink(CACHE_TMPNAME, dir_fd=dir_fd)
+        except OSError:
+            pass
+
+
+def cached_snapshot(
+    collect: Callable[[], dict[str, Any]],
+    cache_ttl: int,
+    refresh: bool = False,
+    cache_key: str = "default",
+) -> dict[str, Any]:
+    if cache_ttl < CACHE_TTL_MIN or cache_ttl > CACHE_TTL_MAX:
+        return collect()
+    dir_fd = _open_cache_dir()
+    if dir_fd is None:
+        return collect()
+    try:
+        if not refresh:
+            cached, mtime = _read_cache(dir_fd, cache_key)
+            if cached is not None and mtime is not None and _cache_fresh(mtime, cache_ttl):
+                return cached
+        lock_fd = _open_lock(dir_fd)
+        if lock_fd is None:
+            return collect()
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            if not refresh:
+                cached, mtime = _read_cache(dir_fd, cache_key)
+                if cached is not None and mtime is not None and _cache_fresh(mtime, cache_ttl):
+                    return cached
+            snapshot = collect()
+            _write_cache(dir_fd, snapshot, cache_key)
+            return snapshot
+        finally:
+            os.close(lock_fd)
+    finally:
+        os.close(dir_fd)
+
+
+def _parse_cache_ttl(value: str) -> int:
+    try:
+        ttl = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("cache ttl must be an integer") from exc
+    if ttl == 0:
+        return 0
+    if ttl < CACHE_TTL_MIN or ttl > CACHE_TTL_MAX:
+        raise argparse.ArgumentTypeError(
+            f"cache ttl must be 0 or {CACHE_TTL_MIN}-{CACHE_TTL_MAX}"
+        )
+    return ttl
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="fleet-snapshot")
     parser.add_argument("--connectors", default=DEFAULT_CONFIG)
+    parser.add_argument("--cache-ttl", type=_parse_cache_ttl, default=0)
+    parser.add_argument("--refresh", action="store_true")
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(
+    argv: list[str] | None = None,
+    *,
+    runner: Callable[[list[str], float, int], str] = run_argv,
+    now: Callable[[], str] = utc_now,
+) -> int:
     args = build_parser().parse_args(sys.argv[1:] if argv is None else argv)
     try:
         connectors = load_connectors(args.connectors)
-        snapshot = collect_snapshot(connectors)
+        cache_key = hashlib.sha256(json.dumps(connectors, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+        snapshot = cached_snapshot(
+            lambda: collect_snapshot(connectors, runner=runner, now=now),
+            args.cache_ttl,
+            args.refresh,
+            cache_key,
+        )
     except ConfigError as exc:
         print(str(exc), file=sys.stderr)
         return 2

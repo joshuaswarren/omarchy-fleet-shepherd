@@ -7,8 +7,8 @@ const bar = readFileSync(new URL("../BarWidget.qml", import.meta.url), "utf8")
 const helper = readFileSync(new URL("../bin/fleet-snapshot", import.meta.url), "utf8")
 
 test("QML starts only the bundled helper and bounds before JSON.parse", () => {
-  assert.match(panel, /command = \["python3", helper\]/)
-  assert.match(bar, /command = \["python3", root\.helper\]/)
+  assert.match(panel, /command = \["python3", helper, "--cache-ttl", "15"\]/)
+  assert.match(bar, /command = \["python3", root\.helper, "--cache-ttl", "15"\]/)
   assert.doesNotMatch(panel + bar, /\["ssh"|\["herdr"|\["omp"|bash", "-c|sh", "-c/)
   assert.match(panel, /raw\.length > 4194304/)
   assert.match(bar, /raw\.length>4194304/)

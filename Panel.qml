@@ -59,11 +59,12 @@ Item {
     refresh()
   }
   function close() { opened = false }
-  function refresh() {
+  function refresh(force) {
     if (snapshotProcess.running) return
     loading = true
     errorText = ""
-    snapshotProcess.command = ["python3", helper]
+    snapshotProcess.command = ["python3", helper, "--cache-ttl", "15"]
+    if (force === true) snapshotProcess.command = snapshotProcess.command.concat(["--refresh"])
     snapshotProcess.running = true
   }
   function moveCursor(delta) {
@@ -119,7 +120,7 @@ Item {
     }
   }
 
-  Timer { interval: 15000; repeat: true; running: root.opened; onTriggered: root.refresh() }
+  Timer { interval: 15000; repeat: true; running: root.opened; onTriggered: root.refresh(false) }
 
   PanelWindow {
     id: window
@@ -162,7 +163,7 @@ Item {
           Keys.onDownPressed:function(e){e.accepted=true;root.moveCursor(1)}
           Keys.onEscapePressed:{ if(text!=="") text=""; else root.close() }
           Keys.onPressed:function(e){
-            if(e.key===Qt.Key_R && (e.modifiers&Qt.ControlModifier)){e.accepted=true;root.refresh()}
+            if(e.key===Qt.Key_R && (e.modifiers&Qt.ControlModifier)){e.accepted=true;root.refresh(true)}
             else if(e.key===Qt.Key_1 && filterInput.text === ""){e.accepted=true;root.setView("overview")}
             else if(e.key===Qt.Key_2 && filterInput.text === ""){e.accepted=true;root.setView("attention")}
             else if(e.key===Qt.Key_3 && filterInput.text === ""){e.accepted=true;root.setView("agents")}

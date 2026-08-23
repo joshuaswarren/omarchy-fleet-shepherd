@@ -12,6 +12,7 @@ import stat
 import tempfile
 import time
 import unittest
+import threading
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Any
@@ -473,3 +474,217 @@ class ShippedExampleTests(unittest.TestCase):
         raw = json.dumps({"schemaVersion": 2, "connectors": []}).encode()
         with self.assertRaises(FS.ConfigError):
             FS.parse_connectors(raw)
+
+
+class CacheTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._old_xdg = os.environ.get("XDG_RUNTIME_DIR")
+        os.environ["XDG_RUNTIME_DIR"] = self._tmp.name
+
+    def tearDown(self):
+        if self._old_xdg is None:
+            os.environ.pop("XDG_RUNTIME_DIR", None)
+        else:
+            os.environ["XDG_RUNTIME_DIR"] = self._old_xdg
+        self._tmp.cleanup()
+
+    def _runner(self) -> Recorder:
+        return Recorder({
+            tuple(FS.local_herdr_argv()): fixture("herdr_ok.json"),
+            tuple(FS.local_omp_argv()): fixture("omp_ok.json"),
+        })
+
+    def _collect(self, runner: Recorder, now: str = "t"):
+        return lambda: FS.collect_snapshot([FS.default_local()], runner=runner, now=lambda: now)
+
+    def _cache_path(self) -> Path:
+        return Path(os.environ["XDG_RUNTIME_DIR"]) / FS.CACHE_DIRNAME / FS.CACHE_FILENAME
+
+    def _cache_dir(self) -> Path:
+        return Path(os.environ["XDG_RUNTIME_DIR"]) / FS.CACHE_DIRNAME
+
+    def test_cache_hit_avoids_runner(self):
+        rec = self._runner()
+        first = FS.cached_snapshot(self._collect(rec), 15)
+        n = len(rec.calls)
+        self.assertGreater(n, 0)
+        second = FS.cached_snapshot(self._collect(rec), 15)
+        self.assertEqual(len(rec.calls), n)
+        self.assertEqual(second["schemaVersion"], 1)
+        self.assertEqual(second["connectors"][0]["id"], first["connectors"][0]["id"])
+        blob = json.dumps(second)
+        self.assertNotIn("SECRET_SESSION_PATH", blob)
+
+    def test_stale_cache_collects(self):
+        rec = self._runner()
+        FS.cached_snapshot(self._collect(rec), 15)
+        n = len(rec.calls)
+        cache = self._cache_path()
+        past = time.time() - 20
+        os.utime(cache, (past, past))
+        FS.cached_snapshot(self._collect(rec), 15)
+        self.assertGreater(len(rec.calls), n)
+
+    def test_simultaneous_dedup(self):
+        rec = self._runner()
+        counts = {"n": 0}
+        barrier = threading.Barrier(2)
+        errors: list[BaseException] = []
+
+        def collect():
+            counts["n"] += 1
+            time.sleep(0.2)
+            return FS.collect_snapshot([FS.default_local()], runner=rec, now=lambda: "t")
+
+        def worker():
+            try:
+                barrier.wait()
+                FS.cached_snapshot(collect, 15)
+            except BaseException as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(errors, [])
+        self.assertEqual(counts["n"], 1)
+
+    def test_corrupt_cache_replaced(self):
+        rec = self._runner()
+        FS.cached_snapshot(self._collect(rec), 15)
+        n = len(rec.calls)
+        self._cache_path().write_text("{not-json", encoding="utf-8")
+        snap = FS.cached_snapshot(self._collect(rec), 15)
+        self.assertGreater(len(rec.calls), n)
+        self.assertEqual(snap["schemaVersion"], 1)
+        self.assertIsInstance(snap["connectors"], list)
+
+    def test_symlink_file_rejected(self):
+        rec = self._runner()
+        FS.cached_snapshot(self._collect(rec), 15)
+        cache = self._cache_path()
+        target = Path(self._tmp.name) / "secret.json"
+        target.write_text(json.dumps({"schemaVersion": 1, "connectors": []}), encoding="utf-8")
+        cache.unlink()
+        cache.symlink_to(target)
+        n = len(rec.calls)
+        snap = FS.cached_snapshot(self._collect(rec), 15)
+        self.assertGreater(len(rec.calls), n)
+        self.assertTrue(cache.is_file())
+        self.assertFalse(cache.is_symlink())
+        self.assertTrue(snap["connectors"])
+
+    def test_symlink_dir_rejected(self):
+        elsewhere = Path(self._tmp.name) / "elsewhere"
+        elsewhere.mkdir()
+        link = Path(self._tmp.name) / FS.CACHE_DIRNAME
+        link.symlink_to(elsewhere)
+        rec = self._runner()
+        snap = FS.cached_snapshot(self._collect(rec), 15)
+        self.assertEqual(snap["schemaVersion"], 1)
+        self.assertEqual(list(elsewhere.iterdir()), [])
+        self.assertTrue(link.is_symlink())
+
+    def test_fifo_rejected(self):
+        rec = self._runner()
+        FS.cached_snapshot(self._collect(rec), 15)
+        cache = self._cache_path()
+        cache.unlink()
+        os.mkfifo(cache)
+        n = len(rec.calls)
+        start = time.monotonic()
+        snap = FS.cached_snapshot(self._collect(rec), 15)
+        self.assertLess(time.monotonic() - start, 1.0)
+        self.assertGreater(len(rec.calls), n)
+        self.assertTrue(cache.is_file())
+        self.assertFalse(stat.S_ISFIFO(cache.stat().st_mode))
+        self.assertEqual(snap["schemaVersion"], 1)
+
+    def test_oversize_rejected(self):
+        rec = self._runner()
+        FS.cached_snapshot(self._collect(rec), 15)
+        n = len(rec.calls)
+        self._cache_path().write_bytes(b"{" + (b"x" * (FS.FINAL_MAX_BYTES + 1)) + b"}")
+        snap = FS.cached_snapshot(self._collect(rec), 15)
+        self.assertGreater(len(rec.calls), n)
+        self.assertEqual(snap["schemaVersion"], 1)
+        self.assertLessEqual(self._cache_path().stat().st_size, FS.FINAL_MAX_BYTES)
+
+    def test_permissions(self):
+        rec = self._runner()
+        FS.cached_snapshot(self._collect(rec), 15)
+        cache_dir = self._cache_dir()
+        cache = self._cache_path()
+        lock = cache_dir / FS.CACHE_LOCKNAME
+        self.assertEqual(cache_dir.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(cache.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(lock.stat().st_mode & 0o777, 0o600)
+
+    def test_atomic_update(self):
+        rec = self._runner()
+        first = FS.cached_snapshot(self._collect(rec, now="one"), 15)
+        self.assertEqual(first["generatedAt"], "one")
+        second = FS.cached_snapshot(self._collect(rec, now="two"), 15, refresh=True)
+        self.assertEqual(second["generatedAt"], "two")
+        raw = json.loads(self._cache_path().read_text(encoding="utf-8"))
+        self.assertEqual(raw["generatedAt"], "two")
+        self.assertEqual(raw["schemaVersion"], 1)
+        self.assertIsInstance(raw["connectors"], list)
+        leftovers = list(self._cache_dir().glob(".snapshot.json.tmp*"))
+        self.assertEqual(leftovers, [])
+
+    def test_refresh_bypasses_freshness(self):
+        rec = self._runner()
+        FS.cached_snapshot(self._collect(rec), 15)
+        n = len(rec.calls)
+        FS.cached_snapshot(self._collect(rec), 15, refresh=True)
+        self.assertGreater(len(rec.calls), n)
+        after = len(rec.calls)
+        FS.cached_snapshot(self._collect(rec), 15)
+        self.assertEqual(len(rec.calls), after)
+
+    def test_missing_xdg_disables_cache(self):
+        rec = self._runner()
+        os.environ.pop("XDG_RUNTIME_DIR", None)
+        with tempfile.TemporaryDirectory() as home:
+            old_home = os.environ.get("HOME")
+            os.environ["HOME"] = home
+            try:
+                snap = FS.cached_snapshot(self._collect(rec), 15)
+            finally:
+                if old_home is None:
+                    os.environ.pop("HOME", None)
+                else:
+                    os.environ["HOME"] = old_home
+        self.assertEqual(snap["schemaVersion"], 1)
+        self.assertFalse((Path(home) / FS.CACHE_DIRNAME).exists())
+        self.assertFalse((Path(home) / ".cache" / FS.CACHE_DIRNAME).exists())
+        self.assertFalse((ROOT / FS.CACHE_DIRNAME).exists())
+        self.assertGreater(len(rec.calls), 0)
+
+    def test_parser_cache_flags(self):
+        args = FS.build_parser().parse_args(["--cache-ttl", "15", "--refresh"])
+        self.assertEqual(args.cache_ttl, 15)
+        self.assertTrue(args.refresh)
+
+    def test_cache_key_mismatch_forces_new_collection(self):
+        first_calls = []
+        second_calls = []
+
+        def one():
+            first_calls.append(1)
+            return {"schemaVersion": 1, "generatedAt": "one", "connectors": [{"id": "a"}]}
+
+        def two():
+            second_calls.append(1)
+            return {"schemaVersion": 1, "generatedAt": "two", "connectors": [{"id": "b"}]}
+
+        a = FS.cached_snapshot(one, 15, cache_key="inventory-a")
+        b = FS.cached_snapshot(two, 15, cache_key="inventory-b")
+        self.assertEqual(a["connectors"][0]["id"], "a")
+        self.assertEqual(b["connectors"][0]["id"], "b")
+        self.assertEqual(len(first_calls), 1)
+        self.assertEqual(len(second_calls), 1)

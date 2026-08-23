@@ -34,14 +34,15 @@ Item {
   implicitWidth: label.implicitWidth + 20
   implicitHeight: root.bar ? root.bar.barSize : 26
 
-  function refresh() {
+  function refresh(force) {
     if (snapshotProcess.running) return
-    snapshotProcess.command = ["python3", root.helper]
+    snapshotProcess.command = ["python3", root.helper, "--cache-ttl", "15"]
+    if (force === true) snapshotProcess.command = snapshotProcess.command.concat(["--refresh"])
     snapshotProcess.running = true
   }
 
-  Component.onCompleted: refresh()
-  Timer { interval: Math.max(15, Math.min(300, Number(root.settings.refreshIntervalSec || 30))) * 1000; repeat:true; running:true; onTriggered:root.refresh() }
+  Component.onCompleted: refresh(false)
+  Timer { interval: 5000; repeat:true; running:true; onTriggered:root.refresh(false) }
 
   Process {
     id:snapshotProcess; running:false
@@ -75,7 +76,7 @@ Item {
     MouseArea {
       id:mouse;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor
       acceptedButtons:Qt.LeftButton|Qt.RightButton
-      onClicked:function(ev){if(ev.button===Qt.RightButton)root.refresh();else if(root.bar)root.bar.run("omarchy-shell shell toggle "+root.moduleName+" '{}'")}
+      onClicked:function(ev){if(ev.button===Qt.RightButton)root.refresh(true);else if(root.bar)root.bar.run("omarchy-shell shell toggle "+root.moduleName+" '{}'")}
     }
   }
 }

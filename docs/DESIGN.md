@@ -52,6 +52,8 @@ BarWidget.qml ──toggle──> Panel.qml
 
 QML never starts SSH, Herdr, or OMP directly. It starts one helper with a fixed argv. The helper owns timeouts, process groups, output ceilings, normalization, and connector isolation.
 
+Bar and panel call the same helper through a 15-second runtime cache under `$XDG_RUNTIME_DIR/fleet-shepherd`. A mode-0600 flock serializes refresh; simultaneous callers recheck after locking and return the same atomic snapshot. Cache reads are no-follow, owner-only, regular-file and 4 MiB bounded. Right-click/Ctrl+R force collection; normal polls are cheap cache hits.
+
 ## Connector configuration
 
 ```json

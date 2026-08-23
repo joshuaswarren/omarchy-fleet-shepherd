@@ -13,6 +13,7 @@ Plugin ID: `io.github.joshuaswarren.fleet-shepherd`
 - R5: Entire panel is keyboard-drivable; opening the panel focuses filtering/navigation immediately.
 - R6: One connector timeout or malformed response cannot block or invalidate another connector.
 - R7: OMP parser accepts the current CLI’s human sync prefix before the first JSON object.
+- R8: Bar and panel must display the same cached snapshot; concurrent callers perform at most one fleet collection.
 
 ## Hard bounds
 
