@@ -1,0 +1,16 @@
+{
+  "overall": {
+    "totalRequests": 3,
+    "successfulRequests": 3,
+    "failedRequests": 0,
+    "totalCost": 0.25
+  },
+  "byModel": [
+    {
+      "model": "gpt-5.2",
+      "provider": "openai",
+      "totalRequests": 3,
+      "totalCost": 0.25
+    }
+  ]
+}

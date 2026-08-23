@@ -1,0 +1,677 @@
+#!/usr/bin/env python3
+"""Read-only Herdr + OMP fleet snapshot. No mutation."""
+
+from __future__ import annotations
+
+import argparse
+import errno
+import fcntl
+import json
+import os
+import re
+import select
+import signal
+import stat
+import subprocess
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
+from typing import Any, Callable
+
+SCHEMA_VERSION = 1
+DEFAULT_CONFIG = os.path.expanduser("~/.config/fleet-shepherd/connectors.json")
+CONFIG_MAX_BYTES = 64 * 1024
+OUTPUT_MAX_BYTES = 2 * 1024 * 1024
+FINAL_MAX_BYTES = 4 * 1024 * 1024
+CMD_TIMEOUT_SEC = 8.0
+GLOBAL_TIMEOUT_SEC = 20.0
+SSH_CONNECT_TIMEOUT = 8
+MAX_CONNECTORS = 64
+MAX_AGENTS = 64
+MAX_WORKSPACES = 64
+MAX_MODELS = 64
+MAX_LABEL = 96
+MAX_TITLE = 96
+MAX_ERROR = 256
+ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+ALLOWED_MODES = frozenset({"local", "ssh"})
+ALLOWED_HEALTH = frozenset({"online", "degraded", "offline"})
+ALLOWED_STATUS = frozenset({"idle", "working", "blocked", "done", "waiting", "error", "unknown"})
+CONNECTOR_KEYS_LOCAL = frozenset({"id", "label", "mode"})
+CONNECTOR_KEYS_SSH = frozenset({"id", "label", "mode", "target"})
+FORBIDDEN_CONNECTOR_KEYS = frozenset({
+    "identityFile",
+    "identity",
+    "port",
+    "user",
+    "host",
+    "ProxyCommand",
+    "proxyCommand",
+    "key",
+})
+OVERALL_KEYS = (
+    "totalRequests",
+    "successfulRequests",
+    "failedRequests",
+    "errorRate",
+    "totalInputTokens",
+    "totalOutputTokens",
+    "totalCacheReadTokens",
+    "totalCacheWriteTokens",
+    "totalCost",
+    "avgDuration",
+)
+MODEL_KEYS = ("model", "provider") + OVERALL_KEYS
+SSH_PREFIX = (
+    "ssh",
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    f"ConnectTimeout={SSH_CONNECT_TIMEOUT}",
+    "-o",
+    "StrictHostKeyChecking=yes",
+    "--",
+)
+
+
+class ConfigError(Exception):
+    pass
+
+
+class ProbeError(Exception):
+    pass
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def bound_str(value: Any, limit: int) -> str:
+    if value is None:
+        return ""
+    text = value if isinstance(value, str) else str(value)
+    cleaned = "".join(ch for ch in text if ch >= " " and ch != "\x7f")
+    if len(cleaned) > limit:
+        return cleaned[:limit]
+    return cleaned
+
+
+def bound_num(value: Any) -> int | float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if value != value or value in (float("inf"), float("-inf")):
+        return None
+    return value
+
+
+def validate_id(value: Any, kind: str) -> str:
+    if not isinstance(value, str) or not ID_RE.fullmatch(value):
+        raise ConfigError(f"invalid {kind}")
+    if value.startswith("-"):
+        raise ConfigError(f"invalid {kind}")
+    return value
+
+
+def default_local() -> dict[str, str]:
+    return {"id": "local", "label": "local", "mode": "local"}
+
+
+def read_config_bytes(path: str) -> bytes | None:
+    if not path or "\x00" in path or "\n" in path or "\r" in path:
+        raise ConfigError("invalid config path")
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+    try:
+        fd = os.open(path, flags)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        if exc.errno in (errno.ELOOP, errno.EPERM):
+            raise ConfigError("config symlink rejected") from exc
+        raise ConfigError("config open failed") from exc
+    try:
+        info = os.fstat(fd)
+        if stat.S_ISLNK(info.st_mode):
+            raise ConfigError("config symlink rejected")
+        if not stat.S_ISREG(info.st_mode):
+            raise ConfigError("config must be a regular file")
+        if info.st_size > CONFIG_MAX_BYTES:
+            raise ConfigError("config too large")
+        buf = bytearray()
+        while len(buf) <= CONFIG_MAX_BYTES:
+            try:
+                chunk = os.read(fd, CONFIG_MAX_BYTES + 1 - len(buf))
+            except BlockingIOError:
+                break
+            if not chunk:
+                break
+            buf.extend(chunk)
+            if len(buf) > CONFIG_MAX_BYTES:
+                raise ConfigError("config too large")
+        return bytes(buf)
+    finally:
+        os.close(fd)
+
+
+def parse_connectors(raw: bytes) -> list[dict[str, str]]:
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ConfigError("config is not utf-8") from exc
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ConfigError("config is not json") from exc
+    if not isinstance(data, dict):
+        raise ConfigError("config must be an object")
+    extra = set(data) - {"schemaVersion", "connectors"}
+    if extra:
+        raise ConfigError("unknown config field")
+    if data.get("schemaVersion", 1) != 1:
+        raise ConfigError("unsupported schemaVersion")
+    items = data.get("connectors")
+    if not isinstance(items, list):
+        raise ConfigError("connectors must be an array")
+    if len(items) > MAX_CONNECTORS:
+        raise ConfigError("too many connectors")
+    seen: set[str] = set()
+    out: list[dict[str, str]] = []
+    for item in items:
+        out.append(_parse_one_connector(item, seen))
+    if not any(c["mode"] == "local" for c in out):
+        if len(out) >= MAX_CONNECTORS:
+            raise ConfigError("too many connectors")
+        local = default_local()
+        if local["id"] in seen:
+            raise ConfigError("duplicate connector id")
+        out.insert(0, local)
+    if not out:
+        out.append(default_local())
+    return out
+
+
+def _parse_one_connector(item: Any, seen: set[str]) -> dict[str, str]:
+    if not isinstance(item, dict):
+        raise ConfigError("connector must be an object")
+    keys = set(item)
+    if keys & FORBIDDEN_CONNECTOR_KEYS:
+        raise ConfigError("forbidden connector field")
+    mode = item.get("mode")
+    if mode not in ALLOWED_MODES:
+        raise ConfigError("invalid connector mode")
+    allowed = CONNECTOR_KEYS_SSH if mode == "ssh" else CONNECTOR_KEYS_LOCAL
+    if keys - allowed:
+        raise ConfigError("unknown connector field")
+    missing = allowed - keys
+    if missing:
+        raise ConfigError("missing connector field")
+    cid = validate_id(item.get("id"), "id")
+    if cid in seen:
+        raise ConfigError("duplicate connector id")
+    seen.add(cid)
+    label = bound_str(item.get("label"), MAX_LABEL)
+    if not label:
+        raise ConfigError("invalid label")
+    parsed = {"id": cid, "label": label, "mode": mode}
+    if mode == "ssh":
+        parsed["target"] = validate_id(item.get("target"), "ssh target")
+    return parsed
+
+
+def load_connectors(path: str) -> list[dict[str, str]]:
+    raw = read_config_bytes(path)
+    if raw is None:
+        return [default_local()]
+    return parse_connectors(raw)
+
+
+def local_herdr_argv() -> list[str]:
+    return ["herdr", "api", "snapshot"]
+
+
+def local_omp_argv() -> list[str]:
+    return ["omp", "stats", "--json"]
+
+
+def ssh_herdr_argv(target: str) -> list[str]:
+    validate_id(target, "ssh target")
+    return list(SSH_PREFIX) + [target, "herdr", "api", "snapshot"]
+
+
+def ssh_omp_argv(target: str) -> list[str]:
+    validate_id(target, "ssh target")
+    return list(SSH_PREFIX) + [target, "omp", "stats", "--json"]
+
+
+def argv_for(connector: dict[str, str], kind: str) -> list[str]:
+    if kind == "herdr":
+        if connector["mode"] == "local":
+            return local_herdr_argv()
+        return ssh_herdr_argv(connector["target"])
+    if kind == "omp":
+        if connector["mode"] == "local":
+            return local_omp_argv()
+        return ssh_omp_argv(connector["target"])
+    raise ProbeError("unknown probe")
+
+
+def _kill_proc(proc: subprocess.Popen[bytes]) -> None:
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+    try:
+        proc.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+
+
+def run_argv(argv: list[str], timeout: float, max_bytes: int = OUTPUT_MAX_BYTES) -> str:
+    if not argv or not all(isinstance(part, str) and part for part in argv):
+        raise ProbeError("invalid argv")
+    if timeout <= 0:
+        raise ProbeError("timeout")
+    try:
+        proc = subprocess.Popen(
+            argv,
+            shell=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+    except FileNotFoundError as exc:
+        raise ProbeError("command not found") from exc
+    except OSError as exc:
+        raise ProbeError("spawn failed") from exc
+    assert proc.stdout is not None
+    fd = proc.stdout.fileno()
+    flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+    fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+    buf = bytearray()
+    deadline = time.monotonic() + timeout
+    overflow = False
+    timed_out = False
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                break
+            ready, _, _ = select.select([fd], [], [], min(remaining, 0.05))
+            if ready:
+                try:
+                    chunk = os.read(fd, 8192)
+                except BlockingIOError:
+                    chunk = b""
+                if chunk:
+                    room = max_bytes - len(buf)
+                    if len(chunk) > room:
+                        overflow = True
+                        break
+                    buf.extend(chunk)
+                    if len(buf) >= max_bytes:
+                        try:
+                            extra = os.read(fd, 1)
+                        except BlockingIOError:
+                            extra = b""
+                        if extra:
+                            overflow = True
+                            break
+                elif proc.poll() is not None:
+                    break
+            elif proc.poll() is not None:
+                try:
+                    chunk = os.read(fd, 8192)
+                except BlockingIOError:
+                    chunk = b""
+                if chunk:
+                    if len(buf) + len(chunk) > max_bytes:
+                        overflow = True
+                        break
+                    buf.extend(chunk)
+                    continue
+                break
+        if overflow or timed_out or proc.poll() is None:
+            _kill_proc(proc)
+            if overflow:
+                raise ProbeError("output too large")
+            raise ProbeError("timeout")
+        code = proc.wait(timeout=1)
+    finally:
+        if proc.stdout is not None:
+            proc.stdout.close()
+        if proc.poll() is None:
+            _kill_proc(proc)
+    if code != 0:
+        raise ProbeError("command failed")
+    try:
+        return buf.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ProbeError("invalid utf-8") from exc
+
+
+def parse_json_prefixed(text: str) -> Any:
+    idx = text.find("{")
+    if idx < 0:
+        raise ProbeError("invalid json")
+    try:
+        obj, _end = json.JSONDecoder().raw_decode(text, idx)
+    except json.JSONDecodeError as exc:
+        raise ProbeError("invalid json") from exc
+    return obj
+
+
+def normalize_status(value: Any) -> str:
+    if not isinstance(value, str):
+        return "unknown"
+    status = value.strip().lower()
+    if status in ALLOWED_STATUS:
+        return status
+    return "unknown"
+
+
+def _workspace_labels(snapshot: dict[str, Any]) -> dict[str, str]:
+    labels: dict[str, str] = {}
+    workspaces = snapshot.get("workspaces")
+    if not isinstance(workspaces, list):
+        return labels
+    for item in workspaces[: MAX_WORKSPACES + 1]:
+        if not isinstance(item, dict):
+            continue
+        wid = bound_str(item.get("workspace_id") or item.get("id"), MAX_LABEL)
+        if not wid:
+            continue
+        labels[wid] = bound_str(item.get("label") or item.get("name") or wid, MAX_LABEL)
+    return labels
+
+
+def normalize_herdr(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ProbeError("invalid herdr snapshot")
+    snapshot = raw
+    if "result" in raw:
+        result = raw.get("result")
+        if not isinstance(result, dict):
+            raise ProbeError("invalid herdr snapshot")
+        if raw.get("error"):
+            raise ProbeError("herdr error")
+        snapshot = result.get("snapshot", result)
+    if not isinstance(snapshot, dict):
+        raise ProbeError("invalid herdr snapshot")
+    labels = _workspace_labels(snapshot)
+    source = snapshot.get("agents")
+    if not isinstance(source, list):
+        source = snapshot.get("panes")
+    if not isinstance(source, list):
+        raise ProbeError("invalid herdr snapshot")
+    truncated = len(source) > MAX_AGENTS
+    if truncated:
+        source = source[:MAX_AGENTS]
+    agents: list[dict[str, Any]] = []
+    for item in source:
+        if not isinstance(item, dict):
+            continue
+        cwd = item.get("cwd") or item.get("foreground_cwd") or ""
+        cwd_name = bound_str(os.path.basename(str(cwd).rstrip("/")), MAX_TITLE)
+        wid = bound_str(item.get("workspace_id"), MAX_LABEL)
+        title = item.get("terminal_title_stripped") or item.get("terminal_title") or item.get("title")
+        agents.append({
+            "agent": bound_str(item.get("agent") or "unknown", MAX_LABEL) or "unknown",
+            "status": normalize_status(item.get("agent_status") or item.get("status")),
+            "cwd": cwd_name,
+            "title": bound_str(title, MAX_TITLE),
+            "workspaceId": wid,
+            "workspaceLabel": labels.get(wid, wid),
+        })
+    workspaces: list[dict[str, Any]] = []
+    raw_ws = snapshot.get("workspaces")
+    if isinstance(raw_ws, list):
+        if len(raw_ws) > MAX_WORKSPACES:
+            truncated = True
+            raw_ws = raw_ws[:MAX_WORKSPACES]
+        counts: dict[str, int] = {}
+        for agent in agents:
+            wid = agent["workspaceId"]
+            if wid:
+                counts[wid] = counts.get(wid, 0) + 1
+        for item in raw_ws:
+            if not isinstance(item, dict):
+                continue
+            wid = bound_str(item.get("workspace_id") or item.get("id"), MAX_LABEL)
+            if not wid:
+                continue
+            workspaces.append({
+                "id": wid,
+                "label": bound_str(item.get("label") or item.get("name") or wid, MAX_LABEL),
+                "status": normalize_status(item.get("agent_status") or item.get("status")),
+                "agentCount": counts.get(wid, 0),
+            })
+    return {"agents": agents, "workspaces": workspaces, "truncated": truncated}
+
+
+def _pick_metrics(src: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key in keys:
+        if key in ("model", "provider"):
+            text = bound_str(src.get(key), MAX_LABEL)
+            if text:
+                out[key] = text
+            continue
+        num = bound_num(src.get(key))
+        if num is not None:
+            out[key] = num
+    return out
+
+
+def normalize_omp(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ProbeError("invalid omp stats")
+    overall_src = raw.get("overall")
+    if not isinstance(overall_src, dict):
+        raise ProbeError("invalid omp stats")
+    models_src = raw.get("byModel")
+    if not isinstance(models_src, list):
+        raise ProbeError("invalid omp stats")
+    truncated = len(models_src) > MAX_MODELS
+    models: list[dict[str, Any]] = []
+    for item in models_src[:MAX_MODELS]:
+        if not isinstance(item, dict):
+            continue
+        models.append(_pick_metrics(item, MODEL_KEYS))
+    return {
+        "overall": _pick_metrics(overall_src, OVERALL_KEYS),
+        "byModel": models,
+        "truncated": truncated,
+    }
+
+
+def error_connector(
+    connector: dict[str, str],
+    message: str,
+    now: Callable[[], str],
+    latency_ms: int | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": connector["id"],
+        "label": connector["label"],
+        "mode": connector["mode"],
+        "health": "offline",
+        "freshness": now(),
+        "latencyMs": latency_ms,
+        "error": bound_str(message, MAX_ERROR),
+        "herdr": None,
+        "omp": None,
+    }
+
+
+def probe_one(
+    connector: dict[str, str],
+    kind: str,
+    timeout: float,
+    runner: Callable[[list[str], float, int], str],
+) -> Any:
+    argv = argv_for(connector, kind)
+    text = runner(argv, timeout, OUTPUT_MAX_BYTES)
+    parsed = parse_json_prefixed(text)
+    if kind == "herdr":
+        return normalize_herdr(parsed)
+    return normalize_omp(parsed)
+
+
+def collect_one(
+    connector: dict[str, str],
+    *,
+    cmd_timeout: float,
+    deadline: float,
+    runner: Callable[[list[str], float, int], str],
+    now: Callable[[], str],
+) -> dict[str, Any]:
+    started = time.monotonic()
+    errors: list[str] = []
+    herdr: Any = None
+    omp: Any = None
+    remaining = min(cmd_timeout, deadline - time.monotonic())
+    try:
+        herdr = probe_one(connector, "herdr", remaining, runner)
+    except ProbeError as exc:
+        errors.append(f"herdr: {exc}")
+    remaining = min(cmd_timeout, deadline - time.monotonic())
+    try:
+        omp = probe_one(connector, "omp", remaining, runner)
+    except ProbeError as exc:
+        errors.append(f"omp: {exc}")
+    latency_ms = int(max(0.0, (time.monotonic() - started) * 1000.0))
+    if not errors:
+        health = "online"
+        error = None
+    elif len(errors) == 1:
+        health = "degraded"
+        error = bound_str("; ".join(errors), MAX_ERROR)
+    else:
+        health = "offline"
+        error = bound_str("; ".join(errors), MAX_ERROR)
+    if health not in ALLOWED_HEALTH:
+        health = "offline"
+    return {
+        "id": connector["id"],
+        "label": connector["label"],
+        "mode": connector["mode"],
+        "health": health,
+        "freshness": now(),
+        "latencyMs": latency_ms,
+        "error": error,
+        "herdr": herdr,
+        "omp": omp,
+    }
+
+
+def aggregate_totals(connectors: list[dict[str, Any]]) -> dict[str, Any]:
+    requests = 0
+    cost = 0.0
+    agents = 0
+    workspaces = 0
+    ok = 0
+    for item in connectors:
+        if item.get("health") in ("online", "degraded"):
+            ok += 1
+        herdr = item.get("herdr")
+        if isinstance(herdr, dict):
+            agents += len(herdr.get("agents") or [])
+            workspaces += len(herdr.get("workspaces") or [])
+        omp = item.get("omp")
+        if not isinstance(omp, dict):
+            continue
+        overall = omp.get("overall") or {}
+        req = bound_num(overall.get("totalRequests"))
+        if isinstance(req, (int, float)):
+            requests += int(req)
+        cval = bound_num(overall.get("totalCost"))
+        if isinstance(cval, (int, float)):
+            cost += float(cval)
+    cost_out: int | float = int(cost) if cost == int(cost) else cost
+    return {
+        "connectors": len(connectors),
+        "ok": ok,
+        "agents": agents,
+        "workspaces": workspaces,
+        "totalRequests": requests,
+        "totalCost": cost_out,
+    }
+
+
+def collect_snapshot(
+    connectors: list[dict[str, str]],
+    *,
+    cmd_timeout: float = CMD_TIMEOUT_SEC,
+    global_timeout: float = GLOBAL_TIMEOUT_SEC,
+    runner: Callable[[list[str], float, int], str] = run_argv,
+    now: Callable[[], str] = utc_now,
+) -> dict[str, Any]:
+    generated = now()
+    deadline = time.monotonic() + global_timeout
+    ordered = sorted(connectors, key=lambda c: c["id"])
+    results: dict[str, dict[str, Any]] = {}
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futs = {
+            pool.submit(
+                collect_one,
+                conn,
+                cmd_timeout=cmd_timeout,
+                deadline=deadline,
+                runner=runner,
+                now=now,
+            ): conn
+            for conn in ordered
+        }
+        for fut in as_completed(futs):
+            conn = futs[fut]
+            try:
+                results[conn["id"]] = fut.result()
+            except Exception:
+                results[conn["id"]] = error_connector(conn, "internal error", now)
+    items = []
+    for conn in ordered:
+        item = results.get(conn["id"])
+        if item is None:
+            item = error_connector(conn, "timeout", now)
+        items.append(item)
+    return {
+        "schemaVersion": SCHEMA_VERSION,
+        "generatedAt": generated,
+        "totals": aggregate_totals(items),
+        "connectors": items,
+    }
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="fleet-snapshot")
+    parser.add_argument("--connectors", default=DEFAULT_CONFIG)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(sys.argv[1:] if argv is None else argv)
+    try:
+        connectors = load_connectors(args.connectors)
+        snapshot = collect_snapshot(connectors)
+    except ConfigError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    encoded = json.dumps(snapshot, separators=(",", ":"), ensure_ascii=False, sort_keys=True)
+    if len(encoded.encode("utf-8")) > FINAL_MAX_BYTES:
+        print("fleet snapshot too large", file=sys.stderr)
+        return 3
+    sys.stdout.write(encoded + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

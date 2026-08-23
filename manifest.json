@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.joshuaswarren.fleet-shepherd",
+  "name": "Fleet Shepherd",
+  "version": "0.1.0",
+  "author": "Joshua Warren",
+  "description": "Read-only Herdr agent operations and OMP usage telemetry across a local and SSH connector fleet.",
+  "kinds": [
+    "panel",
+    "bar-widget"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "panel": "Panel.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Fleet Shepherd",
+    "description": "Open the Herdr and OMP fleet console",
+    "category": "Developer Tools",
+    "defaultSection": "right",
+    "allowMultiple": false
+  }
+}

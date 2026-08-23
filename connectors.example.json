@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "connectors": [
+    {
+      "id": "local",
+      "label": "This machine",
+      "mode": "local"
+    },
+    {
+      "id": "connector-a",
+      "label": "Connector A",
+      "mode": "ssh",
+      "target": "connector-a"
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "connectors": [
+    {
+      "id": "local",
+      "label": "This machine",
+      "mode": "local"
+    },
+    {
+      "id": "jw14",
+      "label": "jw14m2",
+      "mode": "ssh",
+      "target": "jw14m2"
+    }
+  ]
+}

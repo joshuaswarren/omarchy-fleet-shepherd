@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-08-23T12:00:00Z",
+  "totals": { "connectors": 3, "ok": 1, "agents": 6, "workspaces": 5, "totalRequests": 1248, "totalCost": 42.17 },
+  "connectors": [
+    {
+      "id": "laptop", "label": "This machine", "mode": "local", "health": "online", "latencyMs": 184, "error": "",
+      "herdr": { "agents": [
+        { "agent": "omp", "status": "working", "cwd": "infra", "title": "Build Fleet Shepherd", "workspaceId": "w1", "workspaceLabel": "Infrastructure" },
+        { "agent": "omp", "status": "blocked", "cwd": "commerce-api", "title": "Needs deployment decision", "workspaceId": "w2", "workspaceLabel": "Commerce" },
+        { "agent": "omp", "status": "done", "cwd": "docs", "title": "Review architecture notes", "workspaceId": "w3", "workspaceLabel": "Docs" }
+      ], "workspaces": [], "truncated": false },
+      "omp": { "overall": { "totalRequests": 733, "totalCost": 18.42, "totalInputTokens": 24500000, "totalOutputTokens": 318000, "errorRate": 0.02 }, "byModel": [ { "model":"gpt-5.6-sol", "provider":"openai-codex", "totalRequests":410, "totalCost":14.20 } ], "truncated": false }
+    },
+    {
+      "id": "connector-a", "label": "Connector A", "mode": "ssh", "health": "degraded", "latencyMs": 428, "error": "omp: timeout",
+      "herdr": { "agents": [
+        { "agent": "omp", "status": "working", "cwd": "client-portal", "title": "Fix checkout regression", "workspaceId": "w4", "workspaceLabel": "Client" },
+        { "agent": "omp", "status": "idle", "cwd": "ops", "title": "", "workspaceId": "w5", "workspaceLabel": "Ops" }
+      ], "workspaces": [], "truncated": false },
+      "omp": null
+    },
+    {
+      "id": "connector-b", "label": "Connector B", "mode": "ssh", "health": "offline", "latencyMs": 8012, "error": "herdr: timeout; omp: timeout", "herdr": null, "omp": null
+    }
+  ]
+}

@@ -1,0 +1,62 @@
+{
+  "id": 1,
+  "result": {
+    "type": "snapshot",
+    "snapshot": {
+      "protocol": 20,
+      "version": "0.8.2",
+      "focused_pane_id": "w1:p1",
+      "workspaces": [
+        {
+          "workspace_id": "w1",
+          "label": "infra",
+          "agent_status": "working",
+          "pane_count": 1
+        },
+        {
+          "workspace_id": "w2",
+          "label": "notes",
+          "agent_status": "idle",
+          "pane_count": 1
+        }
+      ],
+      "panes": [
+        {
+          "pane_id": "w1:p1",
+          "workspace_id": "w1",
+          "agent": "omp",
+          "agent_status": "working",
+          "cwd": "/home/user/src/infra",
+          "terminal_title_stripped": "plan fleet plugin",
+          "agent_session": {
+            "value": "SECRET_SESSION_PATH"
+          }
+        }
+      ],
+      "agents": [
+        {
+          "pane_id": "w1:p1",
+          "workspace_id": "w1",
+          "agent": "omp",
+          "agent_status": "working",
+          "cwd": "/home/user/src/infra",
+          "terminal_title_stripped": "plan fleet plugin",
+          "agent_session": {
+            "value": "SECRET_SESSION_PATH"
+          }
+        },
+        {
+          "pane_id": "w2:p1",
+          "workspace_id": "w2",
+          "agent": "omp",
+          "agent_status": "idle",
+          "cwd": "/home/joshuawarren/src/notes",
+          "terminal_title_stripped": "read notes",
+          "agent_session": {
+            "value": "SECRET_SESSION_PATH"
+          }
+        }
+      ]
+    }
+  }
+}

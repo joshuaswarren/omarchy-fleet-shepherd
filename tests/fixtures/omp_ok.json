@@ -1,0 +1,32 @@
+{
+  "overall": {
+    "totalRequests": 10,
+    "successfulRequests": 9,
+    "failedRequests": 1,
+    "errorRate": 0.1,
+    "totalInputTokens": 1000,
+    "totalOutputTokens": 200,
+    "totalCacheReadTokens": 50,
+    "totalCacheWriteTokens": 0,
+    "totalCost": 1.5,
+    "avgDuration": 12.0
+  },
+  "byModel": [
+    {
+      "model": "glm-5.3",
+      "provider": "zai",
+      "totalRequests": 6,
+      "successfulRequests": 6,
+      "failedRequests": 0,
+      "totalCost": 1.0
+    },
+    {
+      "model": "qwen3",
+      "provider": "local",
+      "totalRequests": 4,
+      "successfulRequests": 3,
+      "failedRequests": 1,
+      "totalCost": 0.5
+    }
+  ]
+}
