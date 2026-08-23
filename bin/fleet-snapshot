@@ -24,8 +24,10 @@ DEFAULT_CONFIG = os.path.expanduser("~/.config/fleet-shepherd/connectors.json")
 CONFIG_MAX_BYTES = 64 * 1024
 OUTPUT_MAX_BYTES = 2 * 1024 * 1024
 FINAL_MAX_BYTES = 4 * 1024 * 1024
-CMD_TIMEOUT_SEC = 8.0
-GLOBAL_TIMEOUT_SEC = 20.0
+HERDR_TIMEOUT_SEC = 8.0
+OMP_TIMEOUT_SEC = 45.0
+GLOBAL_TIMEOUT_SEC = 60.0
+MAX_WORKERS = 8
 SSH_CONNECT_TIMEOUT = 8
 MAX_CONNECTORS = 64
 MAX_AGENTS = 64
@@ -529,7 +531,7 @@ def probe_one(
 def collect_one(
     connector: dict[str, str],
     *,
-    cmd_timeout: float,
+    cmd_timeout: float | None,
     deadline: float,
     runner: Callable[[list[str], float, int], str],
     now: Callable[[], str],
@@ -538,12 +540,14 @@ def collect_one(
     errors: list[str] = []
     herdr: Any = None
     omp: Any = None
-    remaining = min(cmd_timeout, deadline - time.monotonic())
+    herdr_limit = HERDR_TIMEOUT_SEC if cmd_timeout is None else cmd_timeout
+    remaining = min(herdr_limit, deadline - time.monotonic())
     try:
         herdr = probe_one(connector, "herdr", remaining, runner)
     except ProbeError as exc:
         errors.append(f"herdr: {exc}")
-    remaining = min(cmd_timeout, deadline - time.monotonic())
+    omp_limit = OMP_TIMEOUT_SEC if cmd_timeout is None else cmd_timeout
+    remaining = min(omp_limit, deadline - time.monotonic())
     try:
         omp = probe_one(connector, "omp", remaining, runner)
     except ProbeError as exc:
@@ -610,7 +614,7 @@ def aggregate_totals(connectors: list[dict[str, Any]]) -> dict[str, Any]:
 def collect_snapshot(
     connectors: list[dict[str, str]],
     *,
-    cmd_timeout: float = CMD_TIMEOUT_SEC,
+    cmd_timeout: float | None = None,
     global_timeout: float = GLOBAL_TIMEOUT_SEC,
     runner: Callable[[list[str], float, int], str] = run_argv,
     now: Callable[[], str] = utc_now,
@@ -619,7 +623,7 @@ def collect_snapshot(
     deadline = time.monotonic() + global_timeout
     ordered = sorted(connectors, key=lambda c: c["id"])
     results: dict[str, dict[str, Any]] = {}
-    with ThreadPoolExecutor(max_workers=2) as pool:
+    with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, max(1, len(ordered)))) as pool:
         futs = {
             pool.submit(
                 collect_one,

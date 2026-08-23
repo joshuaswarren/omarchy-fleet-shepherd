@@ -100,7 +100,7 @@ Every collection and string is bounded in the helper and revalidated in Model.js
 ## Refresh and staleness
 
 - Default refresh: 15 seconds; configurable 5–300 seconds.
-- Connector timeout: 8 seconds per command.
+- Connector timeouts: Herdr 8 seconds, OMP stats 45 seconds; fleet deadline 60 seconds.
 - Connector queries run concurrently with a small worker ceiling.
 - One connector failure never blocks another.
 - Panel retains the last valid snapshot and marks stale/offline connectors.
