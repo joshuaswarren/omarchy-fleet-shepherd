@@ -53,11 +53,12 @@ test("filter matches connector agent activity cwd workspace and model", () => {
   assert.equal(M.filterConnectors(x.connectors, "missing", "overview").length, 0)
 })
 
-test("usage view omits agents", () => {
+test("usage view omits agents and hides zero-usage connectors", () => {
   const x = M.normalizeSnapshot(raw)
   const out = M.filterConnectors(x.connectors, "", "usage")
-  assert.equal(out.length, 2)   // both have omp data; usage view keeps them
+  assert.equal(out.length, 1)   // zero-usage connector without Herdr is hidden
   assert.equal(out[0].agents.length, 0)
+  assert.equal(out[0].id, "local")
 })
 
 test("rejects invalid schema", () => {

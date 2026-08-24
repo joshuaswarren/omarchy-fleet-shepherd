@@ -102,10 +102,11 @@ function filterConnectors(connectors, filterText, view) {
     }
     var connectorMatch = !q || matches(c.label + " " + c.id + " " + c.health + " " + c.models.map(function(m){ return m.model + " " + m.provider }).join(" "), q)
     // Idle Herdr = no attached session: usage still displays, agents never do.
-    var hasDisplay = (c.herdrPresent && !c.herdrIdle && c.agents.length > 0) || c.ompPresent
+    var hasDisplay = (c.herdrPresent && !c.herdrIdle && c.agents.length > 0) || (c.ompPresent && c.overall && c.overall.requests > 0)
     if (!hasDisplay) continue
     if (!c.herdrPresent && !c.ompPresent) continue
     if (c.herdrPresent && c.herdrIdle && !c.ompPresent) continue
+    if (!c.herdrPresent && c.ompPresent && c.overall.requests === 0) continue
     if (view === "usage") { if (connectorMatch) out.push(Object.assign({}, c, { agents: [] })); continue }
     if (agents.length || (view !== "attention" && connectorMatch)) out.push(Object.assign({}, c, { agents: agents }))
   }
