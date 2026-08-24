@@ -38,9 +38,12 @@ function normalizeConnector(c) {
     var x = rawModels[m] || {}
     models.push({ model: cap(x.model, 128), provider: cap(x.provider, 128), requests: num(x.totalRequests || x.requests), cost: num(x.totalCost || x.cost) })
   }
+  var herdrIdle = !!(c && c.herdr && c.herdr.idle === true)
+  if (herdrIdle) agents = []
   return {
     id: cap(c.id, 96),
     label: cap(c.label || c.id, 96),
+    herdrIdle: herdrIdle,
     health: cap(c.health || "offline", 32),
     latencyMs: Math.max(0, num(c.latencyMs)),
     error: cap(c.error, 256),
@@ -66,7 +69,7 @@ function summarize(connectors) {
     else s.offline++
     s.requests += c.overall.requests
     s.cost += c.overall.cost
-    for (var j = 0; j < c.agents.length; j++) {
+    for (var j = 0; c.herdrPresent && !c.herdrIdle && j < c.agents.length; j++) {
       if (c.agents[j].status === "working") s.working++
       if (c.agents[j].status === "blocked") s.blocked++
     }
@@ -98,6 +101,11 @@ function filterConnectors(connectors, filterText, view) {
       agents.push(a)
     }
     var connectorMatch = !q || matches(c.label + " " + c.id + " " + c.health + " " + c.models.map(function(m){ return m.model + " " + m.provider }).join(" "), q)
+    // Idle Herdr = no attached session: usage still displays, agents never do.
+    var hasDisplay = (c.herdrPresent && !c.herdrIdle && c.agents.length > 0) || c.ompPresent
+    if (!hasDisplay) continue
+    if (!c.herdrPresent && !c.ompPresent) continue
+    if (c.herdrPresent && c.herdrIdle && !c.ompPresent) continue
     if (view === "usage") { if (connectorMatch) out.push(Object.assign({}, c, { agents: [] })); continue }
     if (agents.length || (view !== "attention" && connectorMatch)) out.push(Object.assign({}, c, { agents: agents }))
   }

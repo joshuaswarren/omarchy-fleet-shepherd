@@ -313,8 +313,8 @@ Item {
                     elide: Text.ElideRight
                     font.pixelSize: 10
                     font.family: Style.fontFamily
-                    text: modelData.health + (modelData.health === "offline"
-                      ? "" : " · " + Math.round(modelData.latencyMs) + "ms")
+                    text: (modelData.herdrIdle ? "herdr idle" : modelData.health)
+                      + (modelData.health === "offline" ? "" : " · " + Math.round(modelData.latencyMs) + "ms")
                   }
                   Text {
                     width: parent.width - 250

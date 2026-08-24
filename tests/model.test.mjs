@@ -18,7 +18,7 @@ const raw = {
         { paneId: "p2", agent: "omp", status: "blocked", activity: "Needs answer", cwd: "/src/api", workspace: "api" }
       ]},
       omp: { overall: { totalRequests: 10, totalCost: 1.25, totalInputTokens: 100, totalOutputTokens: 20 }, byModel: [{ model: "gpt", provider: "openai", totalRequests: 10, totalCost: 1.25 }] } },
-    { id: "remote", label: "Connector A", health: "offline", error: "timeout", herdr: { agents: [] }, omp: {} }
+    { id: "remote", label: "Connector A", health: "offline", error: "timeout", herdr: { agents: [] }, omp: { overall: { totalRequests: 0, totalCost: 0 }, byModel: [] } }
   ]
 }
 
@@ -56,7 +56,7 @@ test("filter matches connector agent activity cwd workspace and model", () => {
 test("usage view omits agents", () => {
   const x = M.normalizeSnapshot(raw)
   const out = M.filterConnectors(x.connectors, "", "usage")
-  assert.equal(out.length, 2)
+  assert.equal(out.length, 2)   // both have omp data; usage view keeps them
   assert.equal(out[0].agents.length, 0)
 })
 
@@ -116,4 +116,15 @@ test("successful empty Herdr does not resurrect old agents",()=>{
  assert.equal(merged.connectors[0].agents.length,0)
  assert.equal(merged.connectors[0].models.length,1)
  assert.equal(merged.connectors[0].health,"stale")
+})
+
+test("idle Herdr hides agents but keeps usage in fleet totals", () => {
+  const doc = { schemaVersion: 1, connectors: [
+    { id: "w1", label: "Worker", health: "online", herdr: { agents: [{ agent: "omp", status: "working" }], idle: true }, omp: { overall: { totalRequests: 5, totalCost: 0.5 }, byModel: [] } }
+  ]}
+  const x = M.normalizeSnapshot(doc)
+  assert.equal(x.summary.working, 0)        // idle session: agent not counted
+  assert.equal(x.summary.requests, 5)       // usage still counted
+  const agents = M.filterConnectors(x.connectors, "", "overview")
+  assert.equal(agents[0].agents.length, 0)  // agent row hidden
 })
