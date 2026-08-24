@@ -146,7 +146,8 @@ Item {
         Text { anchors.left:parent.left; anchors.leftMargin:14; anchors.verticalCenter:parent.verticalCenter; color:root.foreground; font.pixelSize:13; font.family:Style.fontFamily; text:"󰳆  Fleet Shepherd" }
         Row {
           anchors.right:parent.right; anchors.rightMargin:14; anchors.verticalCenter:parent.verticalCenter; spacing:18
-          Text { color:root.loading ? root.accent : root.muted; opacity:root.loading ? 1 : 0.55; font.pixelSize:12; font.family:Style.fontFamily; text:root.loading ? "syncing…" : (root.ageText(root.snapshot.generatedAt) + " · Ctrl+R") }
+          Text { color:root.loading ? root.accent : root.muted; opacity:root.loading ? 1 : 0.55; font.pixelSize:12; font.family:Style.fontFamily; text:root.loading && root.snapshot.connectors.length === 0 ? "contacting fleet…"
+      : root.ageText(root.snapshot.generatedAt) + (root.loading ? " · refreshing" : " · Ctrl+R") }
           Text { color:root.foreground; font.pixelSize:16; font.family:Style.fontFamily; text:"󰅖"; MouseArea { anchors.fill:parent; anchors.margins:-5; cursorShape:Qt.PointingHandCursor; onClicked:root.close() } }
         }
       }
