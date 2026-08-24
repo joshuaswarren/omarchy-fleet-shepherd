@@ -95,7 +95,7 @@ class ArgvTests(unittest.TestCase):
         self.assertEqual(FS.local_herdr_argv(), ["herdr", "api", "snapshot"])
 
     def test_local_omp_argv(self):
-        self.assertEqual(FS.local_omp_argv(), ["omp", "stats", "--json"])
+        self.assertEqual(FS.local_omp_argv(), ["sh", "-c", 't=$(mktemp) && omp stats --json > "$t" && cat "$t" && rm -f "$t"'])
 
     def test_ssh_herdr_argv(self):
         self.assertEqual(
@@ -129,9 +129,7 @@ class ArgvTests(unittest.TestCase):
                 "StrictHostKeyChecking=yes",
                 "--",
                 "jw14m2",
-                "omp",
-                "stats",
-                "--json",
+                't=$(mktemp) && omp stats --json > "$t" && cat "$t" && rm -f "$t"',
             ],
         )
 
@@ -688,3 +686,53 @@ class CacheTests(unittest.TestCase):
         self.assertEqual(b["connectors"][0]["id"], "b")
         self.assertEqual(len(first_calls), 1)
         self.assertEqual(len(second_calls), 1)
+
+    def test_herdr_server_not_running_is_idle_not_error(self):
+        import json as _json
+        payload = _json.dumps({"id": "cli:api:snapshot", "error": {"code": "server_not_running", "message": "no herdr server"}}).encode()
+        omp_ok = _json.dumps({"overall": {"totalRequests": 1, "totalCost": 0.1}, "byModel": []})
+        def runner(argv, timeout, cap):
+            return payload.decode() if argv[-3:] == ["herdr", "api", "snapshot"] else omp_ok
+        cfg = FS.parse_connectors(b'{"connectors":[{"id":"h","label":"h","mode":"ssh","target":"h"}]}')
+        got = FS.collect_snapshot(cfg, runner=lambda argv, timeout, cap: runner(argv, timeout, cap), now=lambda: "t")
+        conn = got["connectors"][0]
+        self.assertEqual(conn["health"], "online")
+        self.assertIsNone(conn["error"])
+        self.assertEqual(conn["herdr"]["idle"], True)
+        self.assertEqual(conn["herdr"]["agents"], [])
+
+    def test_nonzero_exit_with_rpc_error_body_classified(self):
+        import json as _json
+        body = _json.dumps({"error": {"code": "server_not_running", "message": "no server"}})
+        exc = FS.classify_probe_failure("herdr", body)
+        self.assertIsInstance(exc, FS.HerdrIdle)
+        exc2 = FS.classify_probe_failure("herdr", "some random failure text")
+        self.assertIsInstance(exc2, FS.ProbeError)
+
+    def test_run_argv_raises_nonzero_with_output(self):
+        import io, os as _os
+        r, w = _os.pipe()
+        _os.close(w)
+        def fake_popen(argv, **kw):
+            class P:
+                pid = 123
+                stdout = io.FileIO(r, closefd=False)
+                stderr = io.FileIO(r, closefd=False)
+                def poll(self):
+                    return 3
+                def wait(self, timeout=None):
+                    return 3
+                def kill(self):
+                    pass
+            return P()
+        import types
+        real_popen = FS.subprocess.Popen
+        FS.subprocess.Popen = fake_popen
+        try:
+            try:
+                FS.run_argv(["false"], 1.0)
+                self.fail("expected _NonZeroExit")
+            except FS._NonZeroExit as exc:
+                self.assertEqual(str(exc), "")
+        finally:
+            FS.subprocess.Popen = real_popen

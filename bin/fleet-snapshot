@@ -92,6 +92,10 @@ class ProbeError(Exception):
     pass
 
 
+class _NonZeroExit(Exception):
+    """Non-zero exit carrying whatever stdout was produced."""
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -239,7 +243,9 @@ def local_herdr_argv() -> list[str]:
 
 
 def local_omp_argv() -> list[str]:
-    return ["omp", "stats", "--json"]
+    # Node.js process.stdout is async for pipes; omp exits before flushing large
+    # payloads (>64KiB) causing truncation. Force a blocking file write.
+    return ["sh", "-c", "t=$(mktemp) && omp stats --json > \"$t\" && cat \"$t\" && rm -f \"$t\""]
 
 
 def ssh_herdr_argv(target: str) -> list[str]:
@@ -249,7 +255,12 @@ def ssh_herdr_argv(target: str) -> list[str]:
 
 def ssh_omp_argv(target: str) -> list[str]:
     validate_id(target, "ssh target")
-    return list(SSH_PREFIX) + [target, "omp", "stats", "--json"]
+    # SSH already uses a remote shell; passing a single string avoids quoting
+    # destruction when SSH concatenates the arguments.
+    return list(SSH_PREFIX) + [
+        target,
+        "t=$(mktemp) && omp stats --json > \"$t\" && cat \"$t\" && rm -f \"$t\""
+    ]
 
 
 def argv_for(connector: dict[str, str], kind: str) -> list[str]:
@@ -291,7 +302,7 @@ def run_argv(argv: list[str], timeout: float, max_bytes: int = OUTPUT_MAX_BYTES)
             argv,
             shell=False,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
             start_new_session=True,
             close_fds=True,
@@ -300,10 +311,14 @@ def run_argv(argv: list[str], timeout: float, max_bytes: int = OUTPUT_MAX_BYTES)
         raise ProbeError("command not found") from exc
     except OSError as exc:
         raise ProbeError("spawn failed") from exc
-    assert proc.stdout is not None
-    fd = proc.stdout.fileno()
-    flags = fcntl.fcntl(fd, fcntl.F_GETFL)
-    fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+    assert proc.stdout is not None and proc.stderr is not None
+    fds = []
+    for stream in (proc.stdout, proc.stderr):
+        fdx = stream.fileno()
+        fl = fcntl.fcntl(fdx, fcntl.F_GETFL)
+        fcntl.fcntl(fdx, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+        fds.append(fdx)
+    fd = fds[0]
     buf = bytearray()
     deadline = time.monotonic() + timeout
     overflow = False
@@ -314,39 +329,34 @@ def run_argv(argv: list[str], timeout: float, max_bytes: int = OUTPUT_MAX_BYTES)
             if remaining <= 0:
                 timed_out = True
                 break
-            ready, _, _ = select.select([fd], [], [], min(remaining, 0.05))
-            if ready:
+            ready, _, _ = select.select(fds, [], [], min(remaining, 0.05))
+            got_data = False
+            for r in ready:
                 try:
-                    chunk = os.read(fd, 8192)
+                    part = os.read(r, 8192)
                 except BlockingIOError:
-                    chunk = b""
-                if chunk:
-                    room = max_bytes - len(buf)
-                    if len(chunk) > room:
+                    part = b""
+                if part:
+                    if len(buf) + len(part) > max_bytes:
                         overflow = True
                         break
-                    buf.extend(chunk)
-                    if len(buf) >= max_bytes:
-                        try:
-                            extra = os.read(fd, 1)
-                        except BlockingIOError:
-                            extra = b""
-                        if extra:
-                            overflow = True
-                            break
-                elif proc.poll() is not None:
-                    break
-            elif proc.poll() is not None:
-                try:
-                    chunk = os.read(fd, 8192)
-                except BlockingIOError:
-                    chunk = b""
-                if chunk:
-                    if len(buf) + len(chunk) > max_bytes:
-                        overflow = True
-                        break
-                    buf.extend(chunk)
-                    continue
+                    buf.extend(part)
+                    got_data = True
+            if overflow:
+                break
+            if not got_data and proc.poll() is not None:
+                for r in fds:
+                    try:
+                        while True:
+                            part = os.read(r, 8192)
+                            if not part:
+                                break
+                            if len(buf) + len(part) > max_bytes:
+                                overflow = True
+                                break
+                            buf.extend(part)
+                    except BlockingIOError:
+                        pass
                 break
         if overflow or timed_out or proc.poll() is None:
             _kill_proc(proc)
@@ -355,12 +365,22 @@ def run_argv(argv: list[str], timeout: float, max_bytes: int = OUTPUT_MAX_BYTES)
             raise ProbeError("timeout")
         code = proc.wait(timeout=1)
     finally:
-        if proc.stdout is not None:
-            proc.stdout.close()
+        for stream in (proc.stdout, proc.stderr):
+            if stream is not None:
+                try:
+                    stream.close()
+                except OSError:
+                    pass
         if proc.poll() is None:
             _kill_proc(proc)
     if code != 0:
-        raise ProbeError("command failed")
+        # Some CLIs emit a JSON-RPC error body on stdout with a failing exit
+        # code; let the classifier decide using the captured output.
+        try:
+            out = buf.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ProbeError("command failed") from exc
+        raise _NonZeroExit(out)
     try:
         return buf.decode("utf-8")
     except UnicodeDecodeError as exc:
@@ -368,14 +388,27 @@ def run_argv(argv: list[str], timeout: float, max_bytes: int = OUTPUT_MAX_BYTES)
 
 
 def parse_json_prefixed(text: str) -> Any:
+    attempts = 0
     idx = text.find("{")
-    if idx < 0:
+    while idx >= 0 and attempts < 32:
+        try:
+            obj, _end = json.JSONDecoder().raw_decode(text, idx)
+            break
+        except json.JSONDecodeError:
+            idx = text.find("{", idx + 1)
+            attempts += 1
+    else:
         raise ProbeError("invalid json")
-    try:
-        obj, _end = json.JSONDecoder().raw_decode(text, idx)
-    except json.JSONDecodeError as exc:
-        raise ProbeError("invalid json") from exc
+    if isinstance(obj, dict) and isinstance(obj.get("error"), dict):
+        code = obj["error"].get("code")
+        if code == "server_not_running":
+            raise HerdrIdle()
+        raise ProbeError(bound_str(obj["error"].get("message") or "remote error", MAX_ERROR))
     return obj
+
+
+class HerdrIdle(Exception):
+    """Herdr is installed but no server session is attached on this host."""
 
 
 def normalize_status(value: Any) -> str:
@@ -528,11 +561,30 @@ def probe_one(
     runner: Callable[[list[str], float, int], str],
 ) -> Any:
     argv = argv_for(connector, kind)
-    text = runner(argv, timeout, OUTPUT_MAX_BYTES)
+    try:
+        text = runner(argv, timeout, OUTPUT_MAX_BYTES)
+    except _NonZeroExit as exc:
+        raise classify_probe_failure(kind, str(exc)) from exc
     parsed = parse_json_prefixed(text)
     if kind == "herdr":
         return normalize_herdr(parsed)
     return normalize_omp(parsed)
+
+
+def classify_probe_failure(kind: str, text: str) -> Exception:
+    """A non-zero exit can still carry a JSON-RPC error body on stdout."""
+    stripped = (text or "").strip()
+    if stripped and "{" in stripped:
+        try:
+            obj, _end = json.JSONDecoder().raw_decode(stripped, stripped.find("{"))
+            if isinstance(obj, dict) and isinstance(obj.get("error"), dict):
+                code = obj["error"].get("code")
+                if code == "server_not_running":
+                    return HerdrIdle()
+                return ProbeError(bound_str(obj["error"].get("message") or "remote error", MAX_ERROR))
+        except json.JSONDecodeError:
+            pass
+    return ProbeError("command failed")
 
 
 def collect_one(
@@ -551,6 +603,8 @@ def collect_one(
     remaining = min(herdr_limit, deadline - time.monotonic())
     try:
         herdr = probe_one(connector, "herdr", remaining, runner)
+    except HerdrIdle:
+        herdr = {"agents": [], "workspaces": [], "truncated": False, "idle": True}
     except ProbeError as exc:
         errors.append(f"herdr: {exc}")
     omp_limit = OMP_TIMEOUT_SEC if cmd_timeout is None else cmd_timeout
