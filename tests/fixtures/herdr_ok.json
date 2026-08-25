@@ -50,7 +50,7 @@
           "workspace_id": "w2",
           "agent": "omp",
           "agent_status": "idle",
-          "cwd": "/home/joshuawarren/src/notes",
+          "cwd": "/home/user/src/notes",
           "terminal_title_stripped": "read notes",
           "agent_session": {
             "value": "SECRET_SESSION_PATH"

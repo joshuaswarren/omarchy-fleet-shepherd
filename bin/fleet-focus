@@ -81,16 +81,19 @@ def main():
             if dry_run:
                 print(f"{addr}\t{client.get('title', '')}")
                 sys.exit(0)
-            try:
-                r = subprocess.run(
-                    ["hyprctl", "dispatch",
-                     'hl.dsp.focus({ window = "address:%s" })' % addr],
-                    capture_output=True, text=True, timeout=5)
-            except Exception:
-                sys.exit(1)
-            if r.returncode == 0 and "ok" in r.stdout:
-                sys.exit(0)
-            print(r.stderr.strip() or r.stdout.strip(), file=sys.stderr)
+            # hyprctl dispatch syntax differs across Hyprland generations:
+            # classic "focuswindow address:..." vs Lua "hl.dsp.focus({...})".
+            # try both; either accepting counts as success.
+            for form in ("focuswindow address:%s" % addr,
+                         'hl.dsp.focus({ window = "address:%s" })' % addr):
+                try:
+                    r = subprocess.run(
+                        ["hyprctl", "dispatch", form],
+                        capture_output=True, text=True, timeout=5)
+                except Exception:
+                    continue
+                if r.returncode == 0 and "ok" in r.stdout:
+                    sys.exit(0)
             sys.exit(2)
     sys.exit(1)
 

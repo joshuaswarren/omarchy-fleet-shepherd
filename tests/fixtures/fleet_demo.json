@@ -4,7 +4,7 @@
   "totals": { "connectors": 3, "ok": 1, "agents": 6, "workspaces": 5, "totalRequests": 1248, "totalCost": 42.17 },
   "connectors": [
     {
-      "id": "laptop", "label": "This machine", "mode": "local", "health": "online", "latencyMs": 184, "error": "",
+      "id": "local", "label": "This machine", "mode": "local", "health": "online", "latencyMs": 184, "error": "",
       "herdr": { "agents": [
         { "agent": "omp", "status": "working", "cwd": "infra", "title": "Build Fleet Shepherd", "workspaceId": "w1", "workspaceLabel": "Infrastructure" },
         { "agent": "omp", "status": "blocked", "cwd": "commerce-api", "title": "Needs deployment decision", "workspaceId": "w2", "workspaceLabel": "Commerce" },

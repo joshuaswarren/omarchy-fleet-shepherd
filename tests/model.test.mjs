@@ -49,7 +49,7 @@ test("attention view keeps only blocked agents", () => {
 
 test("filter matches connector agent activity cwd workspace and model", () => {
   const x = M.normalizeSnapshot(raw)
-  for (const q of ["laptop", "build", "/src/api", "plugins", "openai"]) assert.equal(M.filterConnectors(x.connectors, q, "overview").length, 1)
+  for (const q of ["this", "build", "/src/api", "plugins", "openai"]) assert.equal(M.filterConnectors(x.connectors, q, "overview").length, 1)
   assert.equal(M.filterConnectors(x.connectors, "missing", "overview").length, 0)
 })
 

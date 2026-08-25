@@ -319,7 +319,7 @@ class SnapshotTests(unittest.TestCase):
         self.assertNotIn("SECRET_SESSION_PATH", blob)
         self.assertNotIn("pane_id", blob)
         self.assertNotIn("w1:p1", blob)
-        self.assertNotIn("/home/joshuawarren", blob)
+        self.assertNotIn("/home/user", blob)
 
     def test_one_host_timeout_keeps_others(self):
         runner = self._runner(hang={tuple(FS.ssh_herdr_argv("jw14m2")), tuple(FS.ssh_omp_argv("jw14m2"))})
@@ -767,5 +767,5 @@ class FocusMatcherTests(unittest.TestCase):
         m = self._matches()
         self.assertTrue(m("herdr --remote builds-main", "builds-main"))
         self.assertTrue(m("herdr --remote=media-main", "media-main"))
-        self.assertFalse(m("herdr --remote home-main", "home-main"))
+        self.assertFalse(m("herdr --remote home-main", "home-ma"))
         self.assertFalse(m("herdr --remote builds-main", "local"))

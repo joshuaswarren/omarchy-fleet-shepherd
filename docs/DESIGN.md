@@ -60,7 +60,7 @@ Bar and panel call the same helper through a 15-second runtime cache under `$XDG
 {
   "schemaVersion": 1,
   "connectors": [
-    { "id": "laptop", "label": "This machine", "mode": "local" },
+    { "id": "local", "label": "This machine", "mode": "local" },
     { "id": "connector-a", "label": "Connector A", "mode": "ssh", "target": "connector-a" }
   ]
 }
@@ -85,7 +85,7 @@ SSH `target` is an OpenSSH host alias, not a command or URL. It is restricted to
   },
   "connectors": [
     {
-      "id": "laptop",
+      "id": "local",
       "label": "This machine",
       "health": "online",
       "latencyMs": 180,
