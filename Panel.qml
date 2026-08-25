@@ -20,6 +20,8 @@ Item {
     return url.replace(/\/+$/, "")
   }
   readonly property string helper: pluginDir + "/bin/fleet-snapshot"
+  readonly property string focusHelper: pluginDir + "/bin/fleet-focus"
+  property string focusNote: ""
 
   property bool opened: false
   property bool loading: false
@@ -120,6 +122,15 @@ Item {
     }
   }
 
+  Process {
+    id: focusProcess
+    running: false
+    property string label: ""
+    onExited: function(exitCode) {
+      root.focusNote = exitCode === 0 ? "" : "no local herdr window for " + focusProcess.label
+    }
+  }
+
   Timer { interval: 15000; repeat: true; running: root.opened; onTriggered: root.refresh(false) }
 
   PanelWindow {
@@ -147,6 +158,7 @@ Item {
         Row {
           anchors.right:parent.right; anchors.rightMargin:14; anchors.verticalCenter:parent.verticalCenter; spacing:18
           Text { color:root.loading ? root.accent : root.muted; opacity:root.loading ? 1 : 0.55; font.pixelSize:12; font.family:Style.fontFamily; text:root.loading && root.snapshot.connectors.length === 0 ? "contacting fleet…"
+      : root.focusNote !== "" ? root.focusNote
       : root.ageText(root.snapshot.generatedAt) + (root.loading ? " · refreshing" : " · Ctrl+R") }
           Text { color:root.foreground; font.pixelSize:16; font.family:Style.fontFamily; text:"󰅖"; MouseArea { anchors.fill:parent; anchors.margins:-5; cursorShape:Qt.PointingHandCursor; onClicked:root.close() } }
         }
@@ -362,6 +374,16 @@ Item {
                         font.pixelSize: 10
                         font.family: Style.fontFamily
                         text: modelData.activity || modelData.cwd
+                      }
+                    }
+                    MouseArea {
+                      anchors.fill: parent
+                      cursorShape: Qt.PointingHandCursor
+                      onClicked: {
+                        root.focusNote = ""
+                        focusProcess.label = connectorRow.modelData.label
+                        focusProcess.command = ["python3", root.focusHelper, connectorRow.modelData.focusTarget]
+                        focusProcess.running = true
                       }
                     }
                   }

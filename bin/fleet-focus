@@ -1,0 +1,63 @@
+#!/usr/bin/env python3
+"""Find and focus the terminal window running Herdr for a connector."""
+import json, os, sys, subprocess
+
+def has_herdr_for(pid, target, depth=0):
+    if depth > 15 or pid <= 1:
+        return False
+    try:
+        cmd = open(f"/proc/{pid}/cmdline", "rb").read().decode("utf-8", "replace").replace("\0", " ")
+    except (FileNotFoundError, PermissionError, ProcessLookupError):
+        return False
+    if "herdr" not in cmd:
+        return False
+    argv = cmd.split()
+    if not any(a == "herdr" or a.endswith("/herdr") for a in argv):
+        return False
+    remote = None
+    for i, a in enumerate(argv):
+        if a == "--remote" and i + 1 < len(argv):
+            remote = argv[i + 1]
+        elif a.startswith("--remote="):
+            remote = a.split("=", 1)[1]
+    if target == "local":
+        return remote is None
+    return remote == target
+
+def walk_children(pid, target, depth=0):
+    if has_herdr_for(pid, target, depth):
+        return True
+    if depth > 15:
+        return False
+    try:
+        children = open(f"/proc/{pid}/task/{pid}/children").read().split()
+    except (FileNotFoundError, PermissionError, ProcessLookupError):
+        return False
+    for child in children:
+        if walk_children(int(child), target, depth + 1):
+            return True
+    return False
+
+def main():
+    target = sys.argv[1] if len(sys.argv) > 1 else ""
+    if not target:
+        sys.exit(1)
+    try:
+        clients = json.loads(subprocess.run(
+            ["hyprctl", "clients", "-j"], capture_output=True, text=True, timeout=5
+        ).stdout)
+    except Exception:
+        sys.exit(1)
+    for client in clients:
+        pid = client.get("pid", 0)
+        addr = client.get("address", "")
+        if not pid or not addr:
+            continue
+        if walk_children(pid, target):
+            subprocess.run(["hyprctl", "dispatch", f"focuswindow address:{addr}"],
+                          capture_output=True, timeout=5)
+            sys.exit(0)
+    sys.exit(1)
+
+if __name__ == "__main__":
+    main()

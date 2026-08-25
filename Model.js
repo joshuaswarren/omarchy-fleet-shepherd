@@ -47,6 +47,7 @@ function normalizeConnector(c) {
     health: cap(c.health || "offline", 32),
     latencyMs: Math.max(0, num(c.latencyMs)),
     error: cap(c.error, 256),
+    focusTarget: cap(c.focusTarget || c.id, 96),
     herdrPresent: !!(c && c.herdr && Array.isArray(c.herdr.agents)),
     ompPresent: !!(c && c.omp && c.omp.overall),
     agents: agents,
