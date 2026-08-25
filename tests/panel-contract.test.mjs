@@ -7,8 +7,8 @@ const bar = readFileSync(new URL("../BarWidget.qml", import.meta.url), "utf8")
 const helper = readFileSync(new URL("../bin/fleet-snapshot", import.meta.url), "utf8")
 
 test("QML starts only the bundled helper and bounds before JSON.parse", () => {
-  assert.match(panel, /command = \["python3", helper, "--cache-ttl", "15"\]/)
-  assert.match(bar, /command = \["python3", root\.helper, "--cache-ttl", "15"\]/)
+  assert.match(panel, /command = \["python3", helper, "--cache-ttl", "120"\]/)
+  assert.match(bar, /command = \["python3", root\.helper, "--cache-ttl", "120"\]/)
   assert.doesNotMatch(panel + bar, /\["ssh"|\["herdr"|\["omp"|bash", "-c|sh", "-c/)
   assert.match(panel, /raw\.length > 4194304/)
   assert.match(bar, /raw\.length>4194304/)
@@ -52,4 +52,15 @@ test("agent delegate wraps Row in an Item so the click target can anchor", () =>
 
 test("agent click invokes the focus helper with the connector focus target", () => {
   assert.match(panel, /focusProcess\.command\s*=\s*\["python3",\s*root\.focusHelper,\s*connectorRow\.modelData\.focusTarget\]/);
+});
+
+test("first paint uses cached data instead of blocking on a fleet sweep", () => {
+  assert.match(panel, /--stale-ok/);
+  assert.match(panel, /root\.snapshot\.connectors\.length === 0\) snapshotProcess\.command = snapshotProcess\.command\.concat\(\["--stale-ok"\]\)/);
+});
+
+test("fleet is not polled more than once every two minutes", () => {
+  assert.match(panel, /Timer \{ interval: 120000;/);
+  assert.doesNotMatch(panel, /"--cache-ttl", "15"/);
+  assert.doesNotMatch(bar, /"--cache-ttl", "15"/);
 });

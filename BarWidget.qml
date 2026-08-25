@@ -36,13 +36,13 @@ Item {
 
   function refresh(force) {
     if (snapshotProcess.running) return
-    snapshotProcess.command = ["python3", root.helper, "--cache-ttl", "15"]
+    snapshotProcess.command = ["python3", root.helper, "--cache-ttl", "120"]
     if (force === true) snapshotProcess.command = snapshotProcess.command.concat(["--refresh"])
     snapshotProcess.running = true
   }
 
   Component.onCompleted: refresh(false)
-  Timer { interval: 5000; repeat:true; running:true; onTriggered:root.refresh(false) }
+  Timer { interval: 30000; repeat:true; running:true; onTriggered:root.refresh(false) }
 
   Process {
     id:snapshotProcess; running:false

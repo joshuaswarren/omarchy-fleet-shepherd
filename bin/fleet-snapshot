@@ -877,6 +877,7 @@ def cached_snapshot(
     cache_ttl: int,
     refresh: bool = False,
     cache_key: str = "default",
+    stale_ok: bool = False,
 ) -> dict[str, Any]:
     if cache_ttl < CACHE_TTL_MIN or cache_ttl > CACHE_TTL_MAX:
         return collect()
@@ -886,8 +887,9 @@ def cached_snapshot(
     try:
         if not refresh:
             cached, mtime = _read_cache(dir_fd, cache_key)
-            if cached is not None and mtime is not None and _cache_fresh(mtime, cache_ttl):
-                return cached
+            if cached is not None and mtime is not None:
+                if stale_ok or _cache_fresh(mtime, cache_ttl):
+                    return cached
         lock_fd = _open_lock(dir_fd)
         if lock_fd is None:
             return collect()
@@ -925,6 +927,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--connectors", default=DEFAULT_CONFIG)
     parser.add_argument("--cache-ttl", type=_parse_cache_ttl, default=0)
     parser.add_argument("--refresh", action="store_true")
+    parser.add_argument("--stale-ok", action="store_true")
     return parser
 
 
@@ -943,6 +946,7 @@ def main(
             args.cache_ttl,
             args.refresh,
             cache_key,
+            args.stale_ok,
         )
     except ConfigError as exc:
         print(str(exc), file=sys.stderr)

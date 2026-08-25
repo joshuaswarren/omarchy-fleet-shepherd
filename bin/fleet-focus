@@ -54,9 +54,16 @@ def main():
         if not pid or not addr:
             continue
         if walk_children(pid, target):
-            subprocess.run(["hyprctl", "dispatch", f"focuswindow address:{addr}"],
-                          capture_output=True, timeout=5)
-            sys.exit(0)
+            try:
+                r = subprocess.run(
+                    ["hyprctl", "dispatch",
+                     'hl.dsp.focus({ window = "address:%s" })' % addr],
+                    capture_output=True, text=True, timeout=5)
+            except Exception:
+                sys.exit(1)
+            if r.returncode == 0 and "ok" in r.stdout:
+                sys.exit(0)
+            sys.exit(1)
     sys.exit(1)
 
 if __name__ == "__main__":

@@ -65,7 +65,9 @@ Item {
     if (snapshotProcess.running) return
     loading = true
     errorText = ""
-    snapshotProcess.command = ["python3", helper, "--cache-ttl", "15"]
+    snapshotProcess.command = ["python3", helper, "--cache-ttl", "120"]
+    // first paint: show whatever is cached, however old, instead of blocking on a fleet sweep
+    if (force !== true && root.snapshot.connectors.length === 0) snapshotProcess.command = snapshotProcess.command.concat(["--stale-ok"])
     if (force === true) snapshotProcess.command = snapshotProcess.command.concat(["--refresh"])
     snapshotProcess.running = true
   }
@@ -131,7 +133,7 @@ Item {
     }
   }
 
-  Timer { interval: 15000; repeat: true; running: root.opened; onTriggered: root.refresh(false) }
+  Timer { interval: 120000; repeat: true; running: root.opened; onTriggered: root.refresh(false) }
 
   PanelWindow {
     id: window
