@@ -23,6 +23,8 @@ from typing import Any, Callable
 SCHEMA_VERSION = 1
 DEFAULT_CONFIG = os.path.expanduser("~/.config/fleet-shepherd/connectors.json")
 CONFIG_MAX_BYTES = 64 * 1024
+LOCK_WAIT_SEC = 75.0
+STDERR_MAX_BYTES = 64 * 1024
 OUTPUT_MAX_BYTES = 2 * 1024 * 1024
 FINAL_MAX_BYTES = 4 * 1024 * 1024
 CACHE_DIRNAME = "fleet-shepherd"
@@ -242,10 +244,22 @@ def local_herdr_argv() -> list[str]:
     return ["herdr", "api", "snapshot"]
 
 
+# `omp stats --json` is written to a file before being echoed: Node's stdout is
+# async for pipes and omp can exit before flushing payloads >64 KiB, truncating
+# them. The spool stays inside a 0700 XDG_RUNTIME_DIR directory (never $TMPDIR)
+# and a trap removes it on every exit path, so usage telemetry is not left on
+# disk when a probe times out or omp exits non-zero.
+OMP_SPOOL_SNIPPET = (
+    'd="${XDG_RUNTIME_DIR:-/tmp}/fleet-shepherd"; '
+    '(umask 077 && mkdir -p "$d") || exit 1; '
+    't=$(umask 077 && mktemp "$d/omp.XXXXXX") || exit 1; '
+    "trap 'rm -f \"$t\"' EXIT HUP INT TERM; "
+    'omp stats --json > "$t" && cat "$t"'
+)
+
+
 def local_omp_argv() -> list[str]:
-    # Node.js process.stdout is async for pipes; omp exits before flushing large
-    # payloads (>64KiB) causing truncation. Force a blocking file write.
-    return ["sh", "-c", "t=$(mktemp) && omp stats --json > \"$t\" && cat \"$t\" && rm -f \"$t\""]
+    return ["sh", "-c", OMP_SPOOL_SNIPPET]
 
 
 def ssh_herdr_argv(target: str) -> list[str]:
@@ -257,10 +271,7 @@ def ssh_omp_argv(target: str) -> list[str]:
     validate_id(target, "ssh target")
     # SSH already uses a remote shell; passing a single string avoids quoting
     # destruction when SSH concatenates the arguments.
-    return list(SSH_PREFIX) + [
-        target,
-        "t=$(mktemp) && omp stats --json > \"$t\" && cat \"$t\" && rm -f \"$t\""
-    ]
+    return list(SSH_PREFIX) + [target, OMP_SPOOL_SNIPPET]
 
 
 def argv_for(connector: dict[str, str], kind: str) -> list[str]:
@@ -318,8 +329,12 @@ def run_argv(argv: list[str], timeout: float, max_bytes: int = OUTPUT_MAX_BYTES)
         fl = fcntl.fcntl(fdx, fcntl.F_GETFL)
         fcntl.fcntl(fdx, fcntl.F_SETFL, fl | os.O_NONBLOCK)
         fds.append(fdx)
-    fd = fds[0]
-    buf = bytearray()
+    stdout_fd, stderr_fd = fds[0], fds[1]
+    # Separate buffers: only the producer's stdout is ever parsed as the
+    # payload. A chatty CLI or an SSH banner on stderr must not interleave into
+    # the JSON document or preempt it with the first parseable object.
+    bufs = {stdout_fd: bytearray(), stderr_fd: bytearray()}
+    caps = {stdout_fd: max_bytes, stderr_fd: min(max_bytes, STDERR_MAX_BYTES)}
     deadline = time.monotonic() + timeout
     overflow = False
     timed_out = False
@@ -337,11 +352,16 @@ def run_argv(argv: list[str], timeout: float, max_bytes: int = OUTPUT_MAX_BYTES)
                 except BlockingIOError:
                     part = b""
                 if part:
-                    if len(buf) + len(part) > max_bytes:
-                        overflow = True
-                        break
-                    buf.extend(part)
                     got_data = True
+                    dest, cap_bytes = bufs[r], caps[r]
+                    if len(dest) + len(part) > cap_bytes:
+                        if r == stdout_fd:
+                            overflow = True
+                            break
+                        # stderr is diagnostic only: truncate, never fail
+                        dest.extend(part[: max(0, cap_bytes - len(dest))])
+                        continue
+                    dest.extend(part)
             if overflow:
                 break
             if not got_data and proc.poll() is not None:
@@ -351,10 +371,12 @@ def run_argv(argv: list[str], timeout: float, max_bytes: int = OUTPUT_MAX_BYTES)
                             part = os.read(r, 8192)
                             if not part:
                                 break
-                            if len(buf) + len(part) > max_bytes:
-                                overflow = True
+                            dest, cap_bytes = bufs[r], caps[r]
+                            if len(dest) + len(part) > cap_bytes:
+                                if r == stdout_fd:
+                                    overflow = True
                                 break
-                            buf.extend(part)
+                            dest.extend(part)
                     except BlockingIOError:
                         pass
                 break
@@ -373,16 +395,14 @@ def run_argv(argv: list[str], timeout: float, max_bytes: int = OUTPUT_MAX_BYTES)
                     pass
         if proc.poll() is None:
             _kill_proc(proc)
+    out = bufs[stdout_fd].decode("utf-8", "replace")
     if code != 0:
-        # Some CLIs emit a JSON-RPC error body on stdout with a failing exit
-        # code; let the classifier decide using the captured output.
-        try:
-            out = buf.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise ProbeError("command failed") from exc
-        raise _NonZeroExit(out)
+        # Some CLIs emit a JSON-RPC error body with a failing exit code, on
+        # either stream; the classifier may inspect both. Success never does.
+        err = bufs[stderr_fd].decode("utf-8", "replace").strip()
+        raise _NonZeroExit(out + ("\n" + err if err else ""))
     try:
-        return buf.decode("utf-8")
+        return bufs[stdout_fd].decode("utf-8")
     except UnicodeDecodeError as exc:
         raise ProbeError("invalid utf-8") from exc
 
@@ -842,6 +862,25 @@ def _open_tmp(dir_fd: int) -> int:
         return os.open(CACHE_TMPNAME, flags, 0o600, dir_fd=dir_fd)
 
 
+def _acquire_lock(lock_fd: int, wait_sec: float) -> bool:
+    """Bounded exclusive lock.
+
+    A blocking flock preserves single-collection dedup between the bar and the
+    panel, but a wedged same-user holder would hang every later poll forever.
+    The window is wider than the fleet deadline, so a healthy holder always
+    finishes inside it; a stuck one degrades to stale-cache instead of hanging.
+    """
+    deadline = time.monotonic() + wait_sec
+    while True:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.05)
+
+
 def _write_cache(dir_fd: int, snapshot: dict[str, Any], cache_key: str) -> None:
     if not _valid_cached_snapshot(snapshot):
         return
@@ -894,7 +933,13 @@ def cached_snapshot(
         if lock_fd is None:
             return collect()
         try:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            if not _acquire_lock(lock_fd, LOCK_WAIT_SEC):
+                # someone else is mid-collection and not releasing: serve the
+                # last good snapshot rather than blocking the caller
+                cached, _mtime = _read_cache(dir_fd, cache_key)
+                if cached is not None:
+                    return cached
+                return collect()
             if not refresh:
                 cached, mtime = _read_cache(dir_fd, cache_key)
                 if cached is not None and mtime is not None and _cache_fresh(mtime, cache_ttl):

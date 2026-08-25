@@ -28,6 +28,15 @@ function normalizeAgent(a) {
   }
 }
 
+var HEALTH_STATES = { online: 1, degraded: 1, offline: 1, stale: 1 }
+
+function normalizeHealth(v) {
+  // re-validated here, not trusted from the producer: the render layer must not
+  // depend on the helper for the no-rich-text/enum guarantee
+  var h = String(v == null ? "" : v).toLowerCase()
+  return HEALTH_STATES[h] ? h : "offline"
+}
+
 function normalizeConnector(c) {
   var agents = []
   var rawAgents = c && c.herdr && Array.isArray(c.herdr.agents) ? c.herdr.agents : []
@@ -44,7 +53,7 @@ function normalizeConnector(c) {
     id: cap(c.id, 96),
     label: cap(c.label || c.id, 96),
     herdrIdle: herdrIdle,
-    health: cap(c.health || "offline", 32),
+    health: normalizeHealth(c.health),
     latencyMs: Math.max(0, num(c.latencyMs)),
     error: cap(c.error, 256),
     focusTarget: cap(c.focusTarget || c.id, 96),

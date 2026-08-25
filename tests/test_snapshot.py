@@ -95,7 +95,36 @@ class ArgvTests(unittest.TestCase):
         self.assertEqual(FS.local_herdr_argv(), ["herdr", "api", "snapshot"])
 
     def test_local_omp_argv(self):
-        self.assertEqual(FS.local_omp_argv(), ["sh", "-c", 't=$(mktemp) && omp stats --json > "$t" && cat "$t" && rm -f "$t"'])
+        argv = FS.local_omp_argv()
+        self.assertEqual(argv[:2], ["sh", "-c"])
+        self.assertEqual(len(argv), 3)
+        self.assertEqual(argv[2], FS.OMP_SPOOL_SNIPPET)
+
+    def test_omp_spool_stays_in_runtime_dir_and_always_cleans_up(self):
+        # usage telemetry must not be left in $TMPDIR when a probe times out or
+        # omp exits non-zero: spool inside a 0700 XDG_RUNTIME_DIR dir + trap
+        snippet = FS.OMP_SPOOL_SNIPPET
+        self.assertIn("XDG_RUNTIME_DIR", snippet)
+        self.assertIn("umask 077", snippet)
+        self.assertIn("trap", snippet)
+        for sig in ("EXIT", "HUP", "INT", "TERM"):
+            self.assertIn(sig, snippet)
+        self.assertNotIn("$(mktemp)", snippet)  # bare $TMPDIR spool
+
+    def test_omp_spool_removes_its_file_on_failure_and_signal(self):
+        import subprocess as sp
+        import glob
+        base = os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir()
+        pattern = os.path.join(base, "fleet-shepherd", "omp.*")
+        before = set(glob.glob(pattern))
+        sp.run(["sh", "-c", FS.OMP_SPOOL_SNIPPET.replace("omp stats --json", "false")],
+               capture_output=True)
+        proc = sp.Popen(["sh", "-c", FS.OMP_SPOOL_SNIPPET.replace("omp stats --json", "sleep 5")],
+                        stdout=sp.DEVNULL, stderr=sp.DEVNULL)
+        time.sleep(0.4)
+        proc.terminate()
+        proc.wait(timeout=5)
+        self.assertEqual(set(glob.glob(pattern)) - before, set())
 
     def test_ssh_herdr_argv(self):
         self.assertEqual(
@@ -129,9 +158,14 @@ class ArgvTests(unittest.TestCase):
                 "StrictHostKeyChecking=yes",
                 "--",
                 "jw14m2",
-                't=$(mktemp) && omp stats --json > "$t" && cat "$t" && rm -f "$t"',
+                FS.OMP_SPOOL_SNIPPET,
             ],
         )
+
+    def test_omp_snippet_interpolates_no_connector_value(self):
+        # the snippet is a constant: no target, id, or label reaches the shell
+        for target in ("jw14m2", "builds-main", "a.b-c"):
+            self.assertNotIn(target, FS.ssh_omp_argv(target)[-1])
 
 
 class HostileTargetTests(unittest.TestCase):

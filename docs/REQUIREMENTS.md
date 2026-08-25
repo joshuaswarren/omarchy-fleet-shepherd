@@ -20,7 +20,7 @@ Plugin ID: `io.github.joshuaswarren.fleet-shepherd`
 - Config: 64 KiB, 64 connectors.
 - Helper final JSON: 4 MiB.
 - Per subprocess: 2 MiB stdout; Herdr 8-second deadline, OMP stats 45-second deadline; fleet deadline 60 seconds.
-- Per connector: 256 agents, 128 workspaces, 64 models, 64 folders, 256 series points.
+- Per connector: 64 agents, 64 workspaces, 64 models, 64 folders, 256 series points.
 - Remote strings: 512 characters maximum; ids/labels: 96.
 - Concurrency: maximum 8 workers.
 

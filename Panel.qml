@@ -172,7 +172,7 @@ Item {
         Text { anchors.left:parent.left; anchors.leftMargin:14; anchors.verticalCenter:parent.verticalCenter; color:root.foreground; font.pixelSize:13; font.family:Style.fontFamily; text:"󰳆  Fleet Shepherd" }
         Row {
           anchors.right:parent.right; anchors.rightMargin:14; anchors.verticalCenter:parent.verticalCenter; spacing:18
-          Text { color:root.loading ? root.accent : root.muted; opacity:root.loading ? 1 : 0.55; font.pixelSize:12; font.family:Style.fontFamily; text:root.loading && root.snapshot.connectors.length === 0 ? "contacting fleet…"
+          Text { color:root.loading ? root.accent : root.muted; opacity:root.loading ? 1 : 0.55; textFormat:Text.PlainText; font.pixelSize:12; font.family:Style.fontFamily; text:root.loading && root.snapshot.connectors.length === 0 ? "contacting fleet…"
       : root.focusNote !== "" ? root.focusNote
       : root.ageText(root.snapshot.generatedAt) + (root.loading ? " · refreshing" : " · Ctrl+R") }
           Text { color:root.foreground; font.pixelSize:16; font.family:Style.fontFamily; text:"󰅖"; MouseArea { anchors.fill:parent; anchors.margins:-5; cursorShape:Qt.PointingHandCursor; onClicked:root.close() } }
@@ -341,6 +341,7 @@ Item {
                     color: root.muted
                     opacity: 0.65
                     elide: Text.ElideRight
+                    textFormat: Text.PlainText
                     font.pixelSize: 10
                     font.family: Style.fontFamily
                     text: (modelData.herdrIdle ? "herdr idle" : modelData.health)

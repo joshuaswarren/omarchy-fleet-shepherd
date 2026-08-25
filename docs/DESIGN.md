@@ -52,7 +52,7 @@ BarWidget.qml ──toggle──> Panel.qml
 
 QML never starts SSH, Herdr, or OMP directly. It starts one helper with a fixed argv. The helper owns timeouts, process groups, output ceilings, normalization, and connector isolation.
 
-Bar and panel call the same helper through a 15-second runtime cache under `$XDG_RUNTIME_DIR/fleet-shepherd`. A mode-0600 flock serializes refresh; simultaneous callers recheck after locking and return the same atomic snapshot. Cache reads are no-follow, owner-only, regular-file and 4 MiB bounded. Right-click/Ctrl+R force collection; normal polls are cheap cache hits.
+Bar and panel call the same helper through a 120-second runtime cache under `$XDG_RUNTIME_DIR/fleet-shepherd`. A mode-0600 flock serializes refresh; simultaneous callers recheck after locking and return the same atomic snapshot. Cache reads are no-follow, owner-only, regular-file and 4 MiB bounded. Right-click/Ctrl+R force collection; normal polls are cheap cache hits.
 
 ## Connector configuration
 
@@ -101,7 +101,7 @@ Every collection and string is bounded in the helper and revalidated in Model.js
 
 ## Refresh and staleness
 
-- Default refresh: 15 seconds; configurable 5–300 seconds.
+- Cache TTL: 120 seconds (`--cache-ttl`, accepted range 1–300). Panel polls every 120 s while open; the bar re-reads the cache every 30 s. First paint uses `--stale-ok`, which serves the cached snapshot at any age instead of blocking on a fleet sweep.
 - Connector timeouts: Herdr 8 seconds, OMP stats 45 seconds; fleet deadline 60 seconds.
 - Connector queries run concurrently with a small worker ceiling.
 - One connector failure never blocks another.
