@@ -344,36 +344,39 @@ Item {
 
                 Repeater {
                   model: root.view === "usage" ? [] : modelData.agents.slice(0, connectorRow.agentLimit)
-                  delegate: Row {
+                  delegate: Item {
                     width: parent.width
                     height: 34
-                    spacing: 8
-                    Rectangle {
-                      width: 3; height: 22; radius: 1.5
-                      anchors.verticalCenter: parent.verticalCenter
-                      color: root.stateColor(modelData.status)
-                    }
-                    Column {
-                      width: parent.width - 14
-                      spacing: 1
-                      Text {
-                        width: parent.width
-                        color: modelData.status === "blocked" ? root.urgent : root.foreground
-                        elide: Text.ElideRight
-                        textFormat: Text.PlainText
-                        font.pixelSize: 11
-                        font.family: Style.fontFamily
-                        text: modelData.agent + " · " + modelData.status
+                    Row {
+                      anchors.fill: parent
+                      spacing: 8
+                      Rectangle {
+                        width: 3; height: 22; radius: 1.5
+                        anchors.verticalCenter: parent.verticalCenter
+                        color: root.stateColor(modelData.status)
                       }
-                      Text {
-                        width: parent.width
-                        color: root.muted
-                        opacity: 0.55
-                        elide: Text.ElideRight
-                        textFormat: Text.PlainText
-                        font.pixelSize: 10
-                        font.family: Style.fontFamily
-                        text: modelData.activity || modelData.cwd
+                      Column {
+                        width: parent.width - 14
+                        spacing: 1
+                        Text {
+                          width: parent.width
+                          color: modelData.status === "blocked" ? root.urgent : root.foreground
+                          elide: Text.ElideRight
+                          textFormat: Text.PlainText
+                          font.pixelSize: 11
+                          font.family: Style.fontFamily
+                          text: modelData.agent + " · " + modelData.status
+                        }
+                        Text {
+                          width: parent.width
+                          color: root.muted
+                          opacity: 0.55
+                          elide: Text.ElideRight
+                          textFormat: Text.PlainText
+                          font.pixelSize: 10
+                          font.family: Style.fontFamily
+                          text: modelData.activity || modelData.cwd
+                        }
                       }
                     }
                     MouseArea {

@@ -36,3 +36,20 @@ test("backend enforces fixed argv and fail-closed SSH", () => {
   assert.match(helper, /FINAL_MAX_BYTES = 4 \* 1024 \* 1024/)
   assert.doesNotMatch(helper, /StrictHostKeyChecking=no|accept-new|UserKnownHostsFile=\/dev\/null|shell=True/)
 })
+
+test("agent delegate wraps Row in an Item so the click target can anchor", () => {
+  // Qt rejects fill/left/right anchors on direct children of a Row positioner.
+  // A MouseArea anchored inside a Row silently loses its size -> dead click target.
+  const block = panel.slice(panel.indexOf("connectorRow.agentLimit"));
+  const delegate = block.slice(0, block.indexOf("Repeater", 10));
+  assert.match(delegate, /delegate:\s*Item\s*\{/);
+  assert.match(delegate, /Row\s*\{\s*\n\s*anchors\.fill:\s*parent/);
+  // the MouseArea must be a sibling of that Row, not a child of it
+  const mouseAt = delegate.indexOf("MouseArea");
+  const rowClose = delegate.lastIndexOf("}", mouseAt);
+  assert.ok(mouseAt > 0 && rowClose > 0, "MouseArea must follow the Row block");
+});
+
+test("agent click invokes the focus helper with the connector focus target", () => {
+  assert.match(panel, /focusProcess\.command\s*=\s*\["python3",\s*root\.focusHelper,\s*connectorRow\.modelData\.focusTarget\]/);
+});
