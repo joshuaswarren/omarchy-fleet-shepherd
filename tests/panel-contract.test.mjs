@@ -51,7 +51,8 @@ test("agent delegate wraps Row in an Item so the click target can anchor", () =>
 });
 
 test("agent click invokes the focus helper with the connector focus target", () => {
-  assert.match(panel, /focusProcess\.command\s*=\s*\["python3",\s*root\.focusHelper,\s*connectorRow\.modelData\.focusTarget\]/);
+  assert.match(panel, /focusProcess\.command\s*=\s*\["python3",\s*root\.focusHelper,\s*connector\.focusTarget\]/);
+  assert.match(panel, /root\.focusConnector\(connectorRow\.modelData\)/);
 });
 
 test("first paint uses cached data instead of blocking on a fleet sweep", () => {
@@ -63,4 +64,21 @@ test("fleet is not polled more than once every two minutes", () => {
   assert.match(panel, /Timer \{ interval: 120000;/);
   assert.doesNotMatch(panel, /"--cache-ttl", "15"/);
   assert.doesNotMatch(bar, /"--cache-ttl", "15"/);
+});
+
+test("successful focus dismisses the focus-grabbing overlay", () => {
+  // layer-shell panel paints above the raised terminal and holds input focus,
+  // so without an explicit close the click looks like a no-op
+  assert.match(panel, /if \(exitCode === 0\) \{ root\.focusNote = ""; root\.close\(\); return \}/);
+});
+
+test("focus failure is distinguished from no matching window", () => {
+  assert.match(panel, /exitCode === 2/);
+  assert.match(panel, /could not raise window for/);
+  assert.match(panel, /no local herdr window for/);
+});
+
+test("raising a connector is reachable from the keyboard, not mouse-only", () => {
+  assert.match(panel, /Keys\.onReturnPressed:.*root\.focusConnector\(root\.visibleConnectors\[root\.cursorIndex\]\)/);
+  assert.match(panel, /Keys\.onEnterPressed:.*root\.focusConnector\(root\.visibleConnectors\[root\.cursorIndex\]\)/);
 });

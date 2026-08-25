@@ -2,6 +2,41 @@
 """Find and focus the terminal window running Herdr for a connector."""
 import json, os, sys, subprocess
 
+def matches(cmd, target):
+    """True when this argv is the Herdr TUI for `target` ("local" or an SSH host)."""
+    if "herdr" not in cmd:
+        return False
+    argv = cmd.split()
+    if not argv:
+        return False
+    if not (argv[0] == "herdr" or argv[0].endswith("/herdr")):
+        return False
+    remote = None
+    positional = None
+    skip = False
+    for a in argv[1:]:
+        if skip:
+            skip = False
+            continue
+        if a == "--remote":
+            skip = True
+            continue
+        if a.startswith("--remote="):
+            remote = a.split("=", 1)[1]
+            continue
+        if a.startswith("-"):
+            continue
+        if positional is None:
+            positional = a
+    for i, a in enumerate(argv):
+        if a == "--remote" and i + 1 < len(argv):
+            remote = argv[i + 1]
+    # `herdr client` / `herdr api ...` are helper subprocesses spawned inside a
+    # remote session; only the bare TUI represents the local connector
+    if target == "local":
+        return remote is None and positional is None
+    return remote == target
+
 def has_herdr_for(pid, target, depth=0):
     if depth > 15 or pid <= 1:
         return False
@@ -9,20 +44,7 @@ def has_herdr_for(pid, target, depth=0):
         cmd = open(f"/proc/{pid}/cmdline", "rb").read().decode("utf-8", "replace").replace("\0", " ")
     except (FileNotFoundError, PermissionError, ProcessLookupError):
         return False
-    if "herdr" not in cmd:
-        return False
-    argv = cmd.split()
-    if not any(a == "herdr" or a.endswith("/herdr") for a in argv):
-        return False
-    remote = None
-    for i, a in enumerate(argv):
-        if a == "--remote" and i + 1 < len(argv):
-            remote = argv[i + 1]
-        elif a.startswith("--remote="):
-            remote = a.split("=", 1)[1]
-    if target == "local":
-        return remote is None
-    return remote == target
+    return matches(cmd, target)
 
 def walk_children(pid, target, depth=0):
     if has_herdr_for(pid, target, depth):
@@ -39,7 +61,9 @@ def walk_children(pid, target, depth=0):
     return False
 
 def main():
-    target = sys.argv[1] if len(sys.argv) > 1 else ""
+    args = [a for a in sys.argv[1:] if a != "--dry-run"]
+    dry_run = "--dry-run" in sys.argv[1:]
+    target = args[0] if args else ""
     if not target:
         sys.exit(1)
     try:
@@ -54,6 +78,9 @@ def main():
         if not pid or not addr:
             continue
         if walk_children(pid, target):
+            if dry_run:
+                print(f"{addr}\t{client.get('title', '')}")
+                sys.exit(0)
             try:
                 r = subprocess.run(
                     ["hyprctl", "dispatch",
@@ -63,7 +90,8 @@ def main():
                 sys.exit(1)
             if r.returncode == 0 and "ok" in r.stdout:
                 sys.exit(0)
-            sys.exit(1)
+            print(r.stderr.strip() or r.stdout.strip(), file=sys.stderr)
+            sys.exit(2)
     sys.exit(1)
 
 if __name__ == "__main__":

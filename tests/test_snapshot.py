@@ -736,3 +736,36 @@ class CacheTests(unittest.TestCase):
                 self.assertEqual(str(exc), "")
         finally:
             FS.subprocess.Popen = real_popen
+
+
+class FocusMatcherTests(unittest.TestCase):
+    """Exercises bin/fleet-focus matches() directly, not a copy of its logic."""
+
+    @staticmethod
+    def _matches():
+        script = ROOT / "bin" / "fleet-focus"
+        spec = importlib.util.spec_from_loader(
+            "fleet_focus",
+            importlib.machinery.SourceFileLoader("fleet_focus", str(script)),
+        )
+        assert spec and spec.loader
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.matches
+
+    def test_herdr_client_subprocess_is_not_the_local_connector(self):
+        # a remote session spawns `herdr client`, which carries no --remote flag;
+        # treating it as local sent every local click to the wrong terminal
+        m = self._matches()
+        self.assertFalse(m("/home/j/.local/bin/herdr client", "local"))
+        self.assertFalse(m("/home/j/.local/bin/herdr server", "local"))
+
+    def test_bare_herdr_is_the_local_connector(self):
+        self.assertTrue(self._matches()("herdr", "local"))
+
+    def test_remote_target_matches_exactly(self):
+        m = self._matches()
+        self.assertTrue(m("herdr --remote builds-main", "builds-main"))
+        self.assertTrue(m("herdr --remote=media-main", "media-main"))
+        self.assertFalse(m("herdr --remote home-main", "home-main"))
+        self.assertFalse(m("herdr --remote builds-main", "local"))

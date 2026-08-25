@@ -61,6 +61,14 @@ Item {
     refresh()
   }
   function close() { opened = false }
+
+  function focusConnector(connector) {
+    if (!connector) return
+    root.focusNote = ""
+    focusProcess.label = connector.label
+    focusProcess.command = ["python3", root.focusHelper, connector.focusTarget]
+    focusProcess.running = true
+  }
   function refresh(force) {
     if (snapshotProcess.running) return
     loading = true
@@ -129,7 +137,12 @@ Item {
     running: false
     property string label: ""
     onExited: function(exitCode) {
-      root.focusNote = exitCode === 0 ? "" : "no local herdr window for " + focusProcess.label
+      // the panel is a focus-grabbing layer-shell overlay painted above the
+      // terminal, so a successful raise is invisible until we dismiss it
+      if (exitCode === 0) { root.focusNote = ""; root.close(); return }
+      root.focusNote = exitCode === 2
+        ? "could not raise window for " + focusProcess.label
+        : "no local herdr window for " + focusProcess.label
     }
   }
 
@@ -177,6 +190,8 @@ Item {
           Keys.onUpPressed:function(e){e.accepted=true;root.moveCursor(-1)}
           Keys.onDownPressed:function(e){e.accepted=true;root.moveCursor(1)}
           Keys.onEscapePressed:{ if(text!=="") text=""; else root.close() }
+          Keys.onReturnPressed:function(e){e.accepted=true;root.focusConnector(root.visibleConnectors[root.cursorIndex])}
+          Keys.onEnterPressed:function(e){e.accepted=true;root.focusConnector(root.visibleConnectors[root.cursorIndex])}
           Keys.onPressed:function(e){
             if(e.key===Qt.Key_R && (e.modifiers&Qt.ControlModifier)){e.accepted=true;root.refresh(true)}
             else if(e.key===Qt.Key_1 && filterInput.text === ""){e.accepted=true;root.setView("overview")}
@@ -385,10 +400,7 @@ Item {
                       anchors.fill: parent
                       cursorShape: Qt.PointingHandCursor
                       onClicked: {
-                        root.focusNote = ""
-                        focusProcess.label = connectorRow.modelData.label
-                        focusProcess.command = ["python3", root.focusHelper, connectorRow.modelData.focusTarget]
-                        focusProcess.running = true
+                        root.focusConnector(connectorRow.modelData)
                       }
                     }
                   }
