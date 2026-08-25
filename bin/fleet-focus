@@ -1,8 +1,49 @@
 #!/usr/bin/env python3
-"""Find and focus the terminal window running Herdr for a connector."""
-import json, os, sys, subprocess
+"""Find and focus the terminal window running Herdr for a connector.
 
-def matches(cmd, target):
+Read-only with respect to the fleet: it inspects /proc and asks the compositor
+to raise an existing window. It never starts, signals, or writes to anything.
+"""
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+import sys
+
+# Bounds. hyprctl output is not trusted: a timeout bounds duration, not memory,
+# so every ingest path carries an explicit byte/item/field cap.
+CLIENTS_MAX_BYTES = 1024 * 1024
+MAX_CLIENTS = 512
+MAX_TITLE = 200
+MAX_TARGET = 96
+MAX_DEPTH = 15
+MAX_NODES = 2048
+MAX_CHILDREN = 256
+MAX_CMDLINE_BYTES = 8192
+DISPATCH_TIMEOUT_SEC = 5.0
+
+# Connector ids/SSH aliases, matching bin/fleet-snapshot's ID_RE, plus the
+# "local" sentinel. Fully anchored: an unanchored pattern is what let a crafted
+# id escape its intended scope in a previous plugin review.
+TARGET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+# Hyprland window handles are hex pointers. Anchored so nothing else can reach
+# the dispatch string, which is evaluated as Lua by newer Hyprland builds.
+ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{1,32}$")
+
+EXIT_OK = 0
+EXIT_NO_WINDOW = 1
+EXIT_DISPATCH_FAILED = 2
+EXIT_USAGE = 3
+
+
+def valid_target(value: str) -> bool:
+    if not value or len(value) > MAX_TARGET or value.startswith("-"):
+        return False
+    return bool(TARGET_RE.fullmatch(value))
+
+
+def matches(cmd: str, target: str) -> bool:
     """True when this argv is the Herdr TUI for `target` ("local" or an SSH host)."""
     if "herdr" not in cmd:
         return False
@@ -17,6 +58,7 @@ def matches(cmd, target):
     for a in argv[1:]:
         if skip:
             skip = False
+            remote = a
             continue
         if a == "--remote":
             skip = True
@@ -28,74 +70,130 @@ def matches(cmd, target):
             continue
         if positional is None:
             positional = a
-    for i, a in enumerate(argv):
-        if a == "--remote" and i + 1 < len(argv):
-            remote = argv[i + 1]
-    # `herdr client` / `herdr api ...` are helper subprocesses spawned inside a
-    # remote session; only the bare TUI represents the local connector
+    # `herdr client` / `herdr server` are helper subprocesses spawned inside a
+    # remote session and carry no --remote flag; only the bare TUI is local.
     if target == "local":
         return remote is None and positional is None
     return remote == target
 
-def has_herdr_for(pid, target, depth=0):
-    if depth > 15 or pid <= 1:
-        return False
-    try:
-        cmd = open(f"/proc/{pid}/cmdline", "rb").read().decode("utf-8", "replace").replace("\0", " ")
-    except (FileNotFoundError, PermissionError, ProcessLookupError):
-        return False
-    return matches(cmd, target)
 
-def walk_children(pid, target, depth=0):
-    if has_herdr_for(pid, target, depth):
-        return True
-    if depth > 15:
-        return False
+def read_cmdline(pid: int) -> str | None:
     try:
-        children = open(f"/proc/{pid}/task/{pid}/children").read().split()
-    except (FileNotFoundError, PermissionError, ProcessLookupError):
+        with open(f"/proc/{pid}/cmdline", "rb") as fh:
+            raw = fh.read(MAX_CMDLINE_BYTES)
+    except (OSError, ValueError):
+        return None
+    return raw.decode("utf-8", "replace").replace("\0", " ")
+
+
+def read_children(pid: int) -> list[int]:
+    try:
+        with open(f"/proc/{pid}/task/{pid}/children") as fh:
+            fields = fh.read(MAX_CMDLINE_BYTES).split()
+    except (OSError, ValueError):
+        return []
+    out = []
+    for field in fields[:MAX_CHILDREN]:
+        try:
+            child = int(field)
+        except ValueError:
+            continue
+        if child > 1:
+            out.append(child)
+    return out
+
+
+def tree_has_herdr(pid: int, target: str, budget: list[int], depth: int = 0) -> bool:
+    """Depth- and node-bounded search of a window's process tree."""
+    if depth > MAX_DEPTH or pid <= 1 or budget[0] <= 0:
         return False
-    for child in children:
-        if walk_children(int(child), target, depth + 1):
+    budget[0] -= 1
+    cmd = read_cmdline(pid)
+    if cmd is not None and matches(cmd, target):
+        return True
+    for child in read_children(pid):
+        if tree_has_herdr(child, target, budget, depth + 1):
             return True
     return False
 
-def main():
-    args = [a for a in sys.argv[1:] if a != "--dry-run"]
-    dry_run = "--dry-run" in sys.argv[1:]
-    target = args[0] if args else ""
-    if not target:
-        sys.exit(1)
+
+def load_clients() -> list[dict]:
     try:
-        clients = json.loads(subprocess.run(
-            ["hyprctl", "clients", "-j"], capture_output=True, text=True, timeout=5
-        ).stdout)
-    except Exception:
-        sys.exit(1)
-    for client in clients:
-        pid = client.get("pid", 0)
-        addr = client.get("address", "")
-        if not pid or not addr:
+        proc = subprocess.run(
+            ["hyprctl", "clients", "-j"],
+            capture_output=True,
+            text=True,
+            timeout=DISPATCH_TIMEOUT_SEC,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if proc.returncode != 0:
+        return []
+    out = proc.stdout
+    # a timeout bounds duration, not memory: reject rather than parse an
+    # oversized document inside a process spawned by the long-lived shell
+    if len(out.encode("utf-8", "replace")) > CLIENTS_MAX_BYTES:
+        return []
+    try:
+        clients = json.loads(out)
+    except (ValueError, RecursionError):
+        return []
+    if not isinstance(clients, list):
+        return []
+    return [c for c in clients[:MAX_CLIENTS] if isinstance(c, dict)]
+
+
+def dispatch(addr: str) -> bool:
+    # hyprctl dispatch syntax differs across Hyprland generations: classic
+    # "focuswindow address:..." vs Lua "hl.dsp.focus({...})". addr is anchored
+    # to a hex handle above, so it cannot terminate the Lua string literal.
+    for form in (
+        "focuswindow address:%s" % addr,
+        'hl.dsp.focus({ window = "address:%s" })' % addr,
+    ):
+        try:
+            proc = subprocess.run(
+                ["hyprctl", "dispatch", form],
+                capture_output=True,
+                text=True,
+                timeout=DISPATCH_TIMEOUT_SEC,
+            )
+        except (OSError, subprocess.SubprocessError):
             continue
-        if walk_children(pid, target):
-            if dry_run:
-                print(f"{addr}\t{client.get('title', '')}")
-                sys.exit(0)
-            # hyprctl dispatch syntax differs across Hyprland generations:
-            # classic "focuswindow address:..." vs Lua "hl.dsp.focus({...})".
-            # try both; either accepting counts as success.
-            for form in ("focuswindow address:%s" % addr,
-                         'hl.dsp.focus({ window = "address:%s" })' % addr):
-                try:
-                    r = subprocess.run(
-                        ["hyprctl", "dispatch", form],
-                        capture_output=True, text=True, timeout=5)
-                except Exception:
-                    continue
-                if r.returncode == 0 and "ok" in r.stdout:
-                    sys.exit(0)
-            sys.exit(2)
-    sys.exit(1)
+        if proc.returncode == 0 and "ok" in proc.stdout:
+            return True
+    return False
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    dry_run = "--dry-run" in args
+    positional = [a for a in args if not a.startswith("-")]
+    target = positional[0] if positional else ""
+    if not valid_target(target):
+        print("invalid connector target", file=sys.stderr)
+        return EXIT_USAGE
+
+    budget = [MAX_NODES]
+    for client in load_clients():
+        pid = client.get("pid")
+        addr = client.get("address")
+        if not isinstance(pid, int) or pid <= 1:
+            continue
+        if not isinstance(addr, str) or not ADDRESS_RE.fullmatch(addr):
+            continue
+        if not tree_has_herdr(pid, target, budget):
+            continue
+        if dry_run:
+            title = client.get("title")
+            title = title[:MAX_TITLE] if isinstance(title, str) else ""
+            # untrusted window text: single line, printable only
+            title = "".join(ch for ch in title if ch.isprintable())
+            print(f"{addr}\t{title}")
+            return EXIT_OK
+        return EXIT_OK if dispatch(addr) else EXIT_DISPATCH_FAILED
+    return EXIT_NO_WINDOW
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

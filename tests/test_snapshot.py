@@ -738,6 +738,118 @@ class CacheTests(unittest.TestCase):
             FS.subprocess.Popen = real_popen
 
 
+class FocusHelperTests(unittest.TestCase):
+    """bin/fleet-focus, audited against findings from prior marketplace reviews."""
+
+    @staticmethod
+    def _mod():
+        script = ROOT / "bin" / "fleet-focus"
+        spec = importlib.util.spec_from_loader(
+            "fleet_focus",
+            importlib.machinery.SourceFileLoader("fleet_focus", str(script)),
+        )
+        assert spec and spec.loader
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    # --- matcher -----------------------------------------------------------
+    def test_herdr_client_subprocess_is_not_the_local_connector(self):
+        # a remote session spawns `herdr client`, which carries no --remote flag;
+        # treating it as local sent every local click to the wrong terminal
+        m = self._mod().matches
+        self.assertFalse(m("/home/u/.local/bin/herdr client", "local"))
+        self.assertFalse(m("/home/u/.local/bin/herdr server", "local"))
+
+    def test_bare_herdr_is_the_local_connector(self):
+        self.assertTrue(self._mod().matches("herdr", "local"))
+
+    def test_remote_target_matches_exactly(self):
+        m = self._mod().matches
+        self.assertTrue(m("herdr --remote builds-main", "builds-main"))
+        self.assertTrue(m("herdr --remote=media-main", "media-main"))
+        self.assertFalse(m("herdr --remote home-main", "home-ma"))
+        self.assertFalse(m("herdr --remote builds-main", "local"))
+
+    def test_repeated_remote_flag_parses_consistently(self):
+        # the old two-loop parse disagreed with itself on this shape
+        m = self._mod().matches
+        self.assertTrue(m("herdr --remote a --remote b", "b"))
+        self.assertFalse(m("herdr --remote a --remote b", "local"))
+
+    # --- target validation (unanchored-pattern lesson) ---------------------
+    def test_hostile_targets_are_refused_before_any_subprocess(self):
+        v = self._mod().valid_target
+        for bad in ("", "-oProxyCommand=x", "../../etc/passwd", "a;id", "$(id)",
+                    "`id`", "a b", "local\nx", '"}) os.execute("id', "a" * 200):
+            self.assertFalse(v(bad), bad)
+
+    def test_legitimate_targets_accepted(self):
+        v = self._mod().valid_target
+        for good in ("local", "builds-main", "home_1", "a.b-c", "H2"):
+            self.assertTrue(v(good), good)
+
+    # --- window handle anchoring (Lua dispatch is evaluated) ---------------
+    def test_window_handle_must_be_a_hex_pointer(self):
+        rx = self._mod().ADDRESS_RE
+        self.assertTrue(rx.fullmatch("0x5623f5447d20"))
+        for bad in ('0x1"}) os.execute("id', "0x1; id", "5623f5", "0xzz", "",
+                    "0x" + "a" * 40):
+            self.assertFalse(rx.fullmatch(bad), bad)
+
+    # --- bounds (a timeout bounds duration, not memory) -------------------
+    def test_ingest_paths_declare_explicit_caps(self):
+        mod = self._mod()
+        self.assertLessEqual(mod.CLIENTS_MAX_BYTES, 4 * 1024 * 1024)
+        self.assertLessEqual(mod.MAX_CLIENTS, 1024)
+        self.assertLessEqual(mod.MAX_CMDLINE_BYTES, 64 * 1024)
+        self.assertLessEqual(mod.MAX_CHILDREN, 1024)
+        self.assertLessEqual(mod.MAX_NODES, 8192)
+        self.assertLessEqual(mod.MAX_DEPTH, 32)
+
+    def test_process_walk_stops_at_the_node_budget(self):
+        mod = self._mod()
+        mod.read_cmdline = lambda pid: "sh"
+        mod.read_children = lambda pid: [pid + 1]
+        budget = [4]
+        self.assertFalse(mod.tree_has_herdr(100, "local", budget))
+        self.assertEqual(budget[0], 0)
+
+    def test_malformed_proc_children_do_not_raise(self):
+        mod = self._mod()
+        import io
+        real_open = open
+        def fake(path, *a, **k):
+            if "children" in str(path):
+                return io.StringIO("12 notanumber 0 1 -5\n")
+            return real_open(path, *a, **k)
+        mod.open = fake  # module-scoped shadow; builtins untouched
+        try:
+            import builtins
+            builtins.open = fake
+            self.assertEqual(mod.read_children(2), [12])
+        finally:
+            builtins.open = real_open
+
+    def test_unreadable_proc_entries_are_skipped(self):
+        mod = self._mod()
+        self.assertEqual(mod.read_children(4194305), [])
+        self.assertIsNone(mod.read_cmdline(4194305))
+        self.assertFalse(mod.tree_has_herdr(1, "local", [10]))
+
+    def test_exit_codes_are_distinct(self):
+        mod = self._mod()
+        self.assertEqual(
+            len({mod.EXIT_OK, mod.EXIT_NO_WINDOW, mod.EXIT_DISPATCH_FAILED, mod.EXIT_USAGE}), 4)
+
+    def test_invalid_target_exits_usage_without_calling_hyprctl(self):
+        mod = self._mod()
+        called = []
+        mod.load_clients = lambda: called.append(1) or []
+        self.assertEqual(mod.main(["a b"]), mod.EXIT_USAGE)
+        self.assertEqual(called, [])
+
+
 class FocusMatcherTests(unittest.TestCase):
     """Exercises bin/fleet-focus matches() directly, not a copy of its logic."""
 
