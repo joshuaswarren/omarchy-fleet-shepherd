@@ -124,7 +124,7 @@ Every collection and string is bounded in the helper and revalidated in Model.js
 
 Bar: sheep/Pi mark plus `working · blocked · cost`, urgent when blocked, muted when every connector is stale/offline.
 
-Panel header: fleet freshness, refresh, close. Summary strip: connectors online, active agents, blocked count, aggregate requests/cost. Connector rows show up to three agents in overview, all attention rows up to the safety cap, and top OMP models in Usage. Typing filters immediately; arrows navigate; `Ctrl+R` refreshes; `1–4` switches views; `Esc` clears filter then closes.
+Panel header: fleet freshness, refresh, close. Summary strip: connectors online, active agents, blocked count, aggregate requests/cost. Connector rows show up to three agents in overview, all attention rows up to the safety cap, and top OMP models in Usage. Typing filters immediately; arrows navigate; `Return`/`Enter` raises the selected connector's Herdr terminal; `Ctrl+R` refreshes; `1–4` switches views; `Esc` clears filter then closes.
 
 The first screen answers three questions without clicking:
 

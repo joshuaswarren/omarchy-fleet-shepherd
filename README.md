@@ -66,6 +66,7 @@ chmod 600 ~/.config/fleet-shepherd/connectors.json
 
 - Start typing: filter connectors, agents, projects and models
 - `Up` / `Down`: move connector selection
+- `Return` / `Enter`: raise the terminal running the selected connector's Herdr
 - `1`–`4`: Overview / Attention / Agents / Usage
 - `Ctrl+R`: refresh
 - `Esc`: clear filter, then close

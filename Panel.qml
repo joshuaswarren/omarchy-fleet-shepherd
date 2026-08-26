@@ -140,8 +140,8 @@ Item {
       // the panel is a focus-grabbing layer-shell overlay painted above the
       // terminal, so a successful raise is invisible until we dismiss it
       if (exitCode === 0) { root.focusNote = ""; root.close(); return }
-      root.focusNote = exitCode === 2
-        ? "could not raise window for " + focusProcess.label
+      root.focusNote = exitCode === 2 ? "could not raise window for " + focusProcess.label
+        : exitCode === 3 ? "invalid focus target for " + focusProcess.label
         : "no local herdr window for " + focusProcess.label
     }
   }
