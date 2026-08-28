@@ -98,6 +98,9 @@ class DocClaimTests(unittest.TestCase):
         self.assertIn("120-second runtime cache", self._docs())
 
     def test_no_persistence_claim_is_honest(self):
-        # the omp spool must stay inside XDG_RUNTIME_DIR for the privacy claim
-        self.assertIn("XDG_RUNTIME_DIR", FS.OMP_SPOOL_SNIPPET)
-        self.assertNotIn("$(mktemp)", FS.OMP_SPOOL_SNIPPET)
+        # the omp spool must live in an atomically created private 0700
+        # per-invocation directory — no predictable shared path — and be
+        # removed on every exit path
+        self.assertIn("mktemp -d", FS.OMP_SPOOL_SNIPPET)
+        self.assertNotIn("fleet-shepherd", FS.OMP_SPOOL_SNIPPET)
+        self.assertIn("trap", FS.OMP_SPOOL_SNIPPET)

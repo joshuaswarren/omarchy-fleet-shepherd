@@ -100,31 +100,39 @@ class ArgvTests(unittest.TestCase):
         self.assertEqual(len(argv), 3)
         self.assertEqual(argv[2], FS.OMP_SPOOL_SNIPPET)
 
-    def test_omp_spool_stays_in_runtime_dir_and_always_cleans_up(self):
-        # usage telemetry must not be left in $TMPDIR when a probe times out or
-        # omp exits non-zero: spool inside a 0700 XDG_RUNTIME_DIR dir + trap
+    def test_omp_spool_uses_private_per_invocation_dir_and_always_cleans_up(self):
+        # no predictable shared path: mktemp -d atomically creates a 0700
+        # per-invocation directory, so a local user cannot pre-create or
+        # squat the spool location; the trap removes it on every exit path
         snippet = FS.OMP_SPOOL_SNIPPET
-        self.assertIn("XDG_RUNTIME_DIR", snippet)
-        self.assertIn("umask 077", snippet)
+        self.assertIn("mktemp -d", snippet)
         self.assertIn("trap", snippet)
         for sig in ("EXIT", "HUP", "INT", "TERM"):
             self.assertIn(sig, snippet)
-        self.assertNotIn("$(mktemp)", snippet)  # bare $TMPDIR spool
+        self.assertNotIn("mkdir", snippet)  # no trust in pre-existing paths
+        self.assertNotIn("fleet-shepherd", snippet)  # no shared fixed name
 
     def test_omp_spool_removes_its_file_on_failure_and_signal(self):
         import subprocess as sp
-        import glob
-        base = os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir()
-        pattern = os.path.join(base, "fleet-shepherd", "omp.*")
-        before = set(glob.glob(pattern))
-        sp.run(["sh", "-c", FS.OMP_SPOOL_SNIPPET.replace("omp stats --json", "false")],
-               capture_output=True)
-        proc = sp.Popen(["sh", "-c", FS.OMP_SPOOL_SNIPPET.replace("omp stats --json", "sleep 5")],
-                        stdout=sp.DEVNULL, stderr=sp.DEVNULL)
-        time.sleep(0.4)
-        proc.terminate()
-        proc.wait(timeout=5)
-        self.assertEqual(set(glob.glob(pattern)) - before, set())
+        with tempfile.TemporaryDirectory() as sandbox:
+            env = {**os.environ, "TMPDIR": sandbox}
+            sp.run(["sh", "-c", FS.OMP_SPOOL_SNIPPET.replace("omp stats --json", "false")],
+                   capture_output=True, env=env)
+            proc = sp.Popen(["sh", "-c", FS.OMP_SPOOL_SNIPPET.replace("omp stats --json", "sleep 5")],
+                            stdout=sp.DEVNULL, stderr=sp.DEVNULL, env=env)
+            time.sleep(0.4)
+            proc.terminate()
+            proc.wait(timeout=5)
+            self.assertEqual(os.listdir(sandbox), [])
+
+    def test_omp_spool_streams_payload_then_cleans_up(self):
+        import subprocess as sp
+        with tempfile.TemporaryDirectory() as sandbox:
+            env = {**os.environ, "TMPDIR": sandbox}
+            result = sp.run(["sh", "-c", FS.OMP_SPOOL_SNIPPET.replace("omp stats --json", "echo hi")],
+                            capture_output=True, text=True, env=env)
+            self.assertEqual(result.stdout.strip(), "hi")
+            self.assertEqual(os.listdir(sandbox), [])
 
     def test_ssh_herdr_argv(self):
         self.assertEqual(

@@ -246,14 +246,14 @@ def local_herdr_argv() -> list[str]:
 
 # `omp stats --json` is written to a file before being echoed: Node's stdout is
 # async for pipes and omp can exit before flushing payloads >64 KiB, truncating
-# them. The spool stays inside a 0700 XDG_RUNTIME_DIR directory (never $TMPDIR)
-# and a trap removes it on every exit path, so usage telemetry is not left on
-# disk when a probe times out or omp exits non-zero.
+# them. The spool lives in an atomically created 0700 per-invocation mktemp -d
+# directory — no predictable shared path a local user could pre-create or
+# squat — and a trap removes it on every exit path, so usage telemetry is not
+# left on disk when a probe times out or omp exits non-zero.
 OMP_SPOOL_SNIPPET = (
-    'd="${XDG_RUNTIME_DIR:-/tmp}/fleet-shepherd"; '
-    '(umask 077 && mkdir -p "$d") || exit 1; '
-    't=$(umask 077 && mktemp "$d/omp.XXXXXX") || exit 1; '
-    "trap 'rm -f \"$t\"' EXIT HUP INT TERM; "
+    'd=$(mktemp -d) || exit 1; '
+    't="$d/omp"; '
+    "trap 'rm -rf \"$d\"' EXIT HUP INT TERM; "
     'omp stats --json > "$t" && cat "$t"'
 )
 
