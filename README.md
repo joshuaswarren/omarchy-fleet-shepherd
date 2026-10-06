@@ -1,5 +1,7 @@
 # Fleet Shepherd for Omarchy
 
+[![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-pink)](https://github.com/sponsors/joshuaswarren)
+
 ![Fleet Shepherd panel walkthrough](preview.gif)
 
 Animated walkthrough rendered from synthetic fixture data (`scripts/make_preview.py`) — it never contains a live fleet screenshot.
@@ -129,6 +131,14 @@ node --test tests/*.test.mjs
 qmllint -I /usr/share/omarchy/shell BarWidget.qml Panel.qml
 omarchy plugin validate .
 ```
+
+## Support
+
+Every bit of support helps keep omarchy-fleet-shepherd alive and free. If you are able, [sponsor on GitHub](https://github.com/sponsors/joshuaswarren) or send a Lightning donation to `joshuaswarren@strike.me` to directly fund continued development and new integrations.
+
+[![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-pink?style=for-the-badge)](https://github.com/sponsors/joshuaswarren)
+
+If financial support is not an option, you can still make a big difference: [star the repo](https://github.com/joshuaswarren/omarchy-fleet-shepherd), share it, or recommend it to a colleague. Word of mouth is how most people find omarchy-fleet-shepherd.
 
 ## License
 
