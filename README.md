@@ -4,7 +4,7 @@
 
 ![Fleet Shepherd panel walkthrough](preview.gif)
 
-Animated walkthrough rendered from synthetic fixture data (`scripts/make_preview.py`) — it never contains a live fleet screenshot.
+The preview uses sample data, not a live fleet screenshot.
 
 One read-only operations panel for Herdr agents and OMP usage across a local and SSH connector fleet.
 
@@ -12,9 +12,8 @@ Fleet Shepherd answers three questions from the bar: are all connectors healthy,
 
 ![Fleet Shepherd panel](preview.png)
 
-_The preview uses synthetic connector, agent, project, usage and error data._
 
-> Status: v0.1.1 local beta. Read-only fleet snapshots are implemented and live-tested; remote mutation is intentionally not implemented.
+> Status: v0.1.2 local beta. Read-only fleet snapshots are implemented and live-tested; remote mutation is intentionally not implemented.
 
 ## Features
 
@@ -30,7 +29,7 @@ _The preview uses synthetic connector, agent, project, usage and error data._
 
 ## Architecture
 
-The QML plugin starts one bundled Python helper. That helper invokes only fixed commands—`herdr api snapshot` and `omp stats --json`—locally or through a fixed SSH argv. See [DESIGN.md](docs/DESIGN.md) and [REQUIREMENTS.md](docs/REQUIREMENTS.md).
+The QML plugin starts one bundled Python helper. It calls `herdr api snapshot` and `omp stats --json`, locally or through fixed SSH arguments. See [DESIGN.md](docs/DESIGN.md) and [REQUIREMENTS.md](docs/REQUIREMENTS.md).
 
 ```text
 Omarchy panel → fleet-snapshot helper → local / SSH connectors
@@ -66,25 +65,25 @@ chmod 600 ~/.config/fleet-shepherd/connectors.json
 }
 ```
 
-`target` is an OpenSSH Host alias from `~/.ssh/config`. Put username, port, identity, proxy and host-key policy in OpenSSH—not this JSON. Unknown or changed host keys fail closed.
+`target` is an OpenSSH Host alias from `~/.ssh/config`. Set username, port, identity, proxy and host-key policy in OpenSSH, not this JSON. Unknown or changed host keys are refused.
 
 ## Keyboard
 
 - Start typing: filter connectors, agents, projects and models
 - `Up` / `Down`: move connector selection
 - `Return` / `Enter`: raise the terminal running the selected connector's Herdr
-- `1`–`4`: Overview / Attention / Agents / Usage
+- `1` through `4`: Overview / Attention / Agents / Usage
 - `Ctrl+R`: refresh
 - `Esc`: clear filter, then close
 
 ## Troubleshooting
 
-- **Panel shows "contacting fleet…" for a long time on first ever run** — the cache is empty, so the helper performs one full fleet sweep (up to 60 s). Every later open paints from cache instantly.
-- **A connector reports `no local herdr window` when raising** — `Return`/click raises a terminal on *this* machine running Herdr for that connector (`herdr` for local, `herdr --remote <target>`); it never SSHes to raise a window. Open one first.
-- **`herdr: command failed` on a remote** — verify noninteractivity by hand: `ssh <host> herdr api snapshot` must return JSON without a password prompt.
-- **OMP shows zero for a connector** — check `ssh <host> "omp stats --json"` exits 0; usage appears only where OMP is installed and has history.
-- **Panel did not appear after reinstall** — restart the shell (`omarchy-shell`), then `omarchy plugin list` to confirm `enabled=true`.
-- **Stale data after editing `connectors.json`** — the cache is keyed to the config; changes invalidate it on the next poll.
+- First open takes time: an empty cache needs a fleet sweep, which can take up to 60 seconds.
+- `no local herdr window`: open a terminal on this machine running `herdr` for local use or `herdr --remote <target>` for that connector. Raising a window does not run SSH.
+- Remote command fails: check that `ssh <host> herdr api snapshot` returns JSON without a password prompt.
+- OMP shows zero: check that `ssh <host> "omp stats --json"` exits successfully. Usage needs OMP history on that connector.
+- Panel missing after reinstall: restart `omarchy-shell` and confirm `enabled=true` with `omarchy plugin list`.
+- Config changed but data is stale: the next poll invalidates the config-keyed cache.
 
 ## Install
 
@@ -108,7 +107,7 @@ rm -rf ~/.config/fleet-shepherd
 
 ## Privacy and security
 
-Fleet Shepherd renders potentially sensitive project paths and terminal titles locally. It does not persist snapshots, transmit telemetry, or read raw OMP sessions. Connector configuration is read via a bounded no-follow, nonblocking descriptor. SSH is BatchMode and StrictHostKeyChecking=yes. Every subprocess and response has a hard deadline and byte ceiling.
+Project paths and terminal titles can be sensitive; the panel shows them locally. Snapshots use a short-lived runtime cache, not a long-term history. The plugin sends no telemetry and reads no raw OMP sessions. Config reads are bounded and refuse symlinks. SSH uses BatchMode and StrictHostKeyChecking=yes; commands and responses have time and size limits.
 
 ## Development
 
@@ -134,12 +133,8 @@ omarchy plugin validate .
 
 ## Support
 
-Every bit of support helps keep omarchy-fleet-shepherd alive and free. If you are able, [sponsor on GitHub](https://github.com/sponsors/joshuaswarren) or send a Lightning donation to `joshuaswarren@strike.me` to directly fund continued development and new integrations.
-
-[![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-pink?style=for-the-badge)](https://github.com/sponsors/joshuaswarren)
-
-If financial support is not an option, you can still make a big difference: [star the repo](https://github.com/joshuaswarren/omarchy-fleet-shepherd), share it, or recommend it to a colleague. Word of mouth is how most people find omarchy-fleet-shepherd.
+[Sponsor on GitHub](https://github.com/sponsors/joshuaswarren) or use Lightning at `joshuaswarren@strike.me`.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).

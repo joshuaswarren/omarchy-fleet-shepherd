@@ -37,17 +37,17 @@ Any overrun terminates the producer and marks only that connector/source failed.
 - S7: v0.1 performs no Herdr/OMP mutation or remote focus.
 - S8: Output is bounded before buffering and bounded again after parsing.
 
-## Regression requirements from previous plugin reviews
+## Regression requirements
 
-- No non-end-anchored untrusted identifiers used in paths or output templates (YT Mini traversal review).
-- No variables used before initialization; tests exercise empty/partial payloads (Remnic review).
-- No unbounded StdioCollector response; producer byte caps must precede QML buffering (Soma review).
-- No initial-only origin trust, redirect following, or implicit network side effects (Soma/Plex reviews).
-- No FileView or test/stat/cat sequence on user-writable files; single-open no-follow/nonblocking I/O only (Plex two-round review).
+- No non-end-anchored untrusted identifiers used in paths or output templates.
+- No variables used before initialization; tests exercise empty and partial payloads.
+- No unbounded StdioCollector response; producer byte caps precede QML buffering.
+- No initial-only origin trust, redirect following, or implicit network side effects.
+- No FileView or test/stat/cat sequence on user-writable files; single-open no-follow, nonblocking I/O only.
 - No QML `Keys` attached to PanelWindow; use focusable Item/TextInput/ListView.
 - Every ListView delegate has explicit width and height.
-- Preview/media files are nonempty and README claims match code.
-- Model.js declarations, QML call sites, and test exports are mechanically compared without aliases.
+- Preview and media files are nonempty, and README claims match code.
+- Model.js declarations, QML call sites, and test exports stay consistent.
 
 ## Release gates
 
@@ -56,6 +56,5 @@ Any overrun terminates the producer and marks only that connector/source failed.
 - `qmllint` has no invalid handlers/properties/syntax failures.
 - `omarchy plugin validate .` passes.
 - Runtime fixture demo renders loading, partial failure, blocked, empty, and success states.
-- Independent security and UX reviews return SHIP; all actionable findings fixed.
 - README has install/remove/dependencies/privacy/config/keyboard/troubleshooting.
 - Root LICENSE and preview.png exist and are nonempty.
