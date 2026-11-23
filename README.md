@@ -4,7 +4,6 @@
 
 ![Fleet Shepherd panel walkthrough](preview.gif)
 
-The preview uses sample data, not a live fleet screenshot.
 
 One read-only operations panel for Herdr agents and OMP usage across a local and SSH connector fleet.
 
@@ -12,8 +11,6 @@ Fleet Shepherd answers three questions from the bar: are all connectors healthy,
 
 ![Fleet Shepherd panel](preview.png)
 
-
-> Status: v0.1.2 local beta. Read-only fleet snapshots are implemented and live-tested; remote mutation is intentionally not implemented.
 
 ## Features
 
@@ -24,12 +21,12 @@ Fleet Shepherd answers three questions from the bar: are all connectors healthy,
 - Partial-failure and stale/offline states without discarding the last valid snapshot
 - Shared locked runtime cache keeps bar and panel on the same exact snapshot
 - Live cross-fleet filter and keyboard navigation
-- Strict byte/item/string/concurrency/time bounds
+- Strict bounds: 64 KiB config, 64 connectors, 4 MiB final JSON, 2 MiB per subprocess stdout, 64 agents and 64 workspaces per connector, 8 workers, 120-second runtime cache; an overrun marks only that connector failed
 - No network listener, database, raw-session scraping, credentials, or elevated service
 
 ## Architecture
 
-The QML plugin starts one bundled Python helper. It calls `herdr api snapshot` and `omp stats --json`, locally or through fixed SSH arguments. See [DESIGN.md](docs/DESIGN.md) and [REQUIREMENTS.md](docs/REQUIREMENTS.md).
+The QML plugin starts one bundled Python helper. It calls `herdr api snapshot` and `omp stats --json`, locally or through fixed SSH arguments. The helper normalizes responses into one bounded JSON shape and hands it to the panel.
 
 ```text
 Omarchy panel → fleet-snapshot helper → local / SSH connectors
