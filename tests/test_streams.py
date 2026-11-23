@@ -80,10 +80,7 @@ class DocClaimTests(unittest.TestCase):
 
     @staticmethod
     def _docs():
-        return (
-            (ROOT / "docs" / "REQUIREMENTS.md").read_text()
-            + (ROOT / "docs" / "DESIGN.md").read_text()
-        )
+        return (ROOT / "README.md").read_text()
 
     def test_documented_per_connector_bounds_match_code(self):
         docs = self._docs()
